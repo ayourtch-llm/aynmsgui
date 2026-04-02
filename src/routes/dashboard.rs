@@ -121,6 +121,9 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
   <a class="card" href="/extract">
     <div class="label">Extract Config</div>
   </a>
+  <a class="card" href="/extract-sw">
+    <div class="label">Extract Software</div>
+  </a>
 </div>
 </body>
 </html>"#,

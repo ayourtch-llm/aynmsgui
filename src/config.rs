@@ -13,7 +13,7 @@ pub struct AppConfig {
     pub port: u16,
 
     /// Path to htpasswd file for authentication
-    #[arg(long, env = "AYNMSGUI_HTPASSWD_FILE")]
+    #[arg(long, default_value = "data/htpasswd", env = "AYNMSGUI_HTPASSWD_FILE")]
     pub htpasswd_file: PathBuf,
 
     /// Session TTL in seconds
@@ -21,7 +21,7 @@ pub struct AppConfig {
     pub session_ttl_secs: u64,
 
     /// Path to JSONL inventory file for AssetCache
-    #[arg(long, env = "AYNMSGUI_INVENTORY_PATH")]
+    #[arg(long, default_value = "data/inventory.jsonl", env = "AYNMSGUI_INVENTORY_PATH")]
     pub inventory_path: Option<PathBuf>,
 
     /// Comma-delimited list of address map URLs
@@ -41,15 +41,15 @@ pub struct AppConfig {
     pub address_map_refresh_secs: u64,
 
     /// Base directory for config generation
-    #[arg(long, env = "AYNMSGUI_CFGGEN_BASE_DIR")]
+    #[arg(long, default_value = "data/cfggen", env = "AYNMSGUI_CFGGEN_BASE_DIR")]
     pub cfggen_base_dir: Option<PathBuf>,
 
     /// Path to target configs
-    #[arg(long, env = "AYNMSGUI_TARGET_CONFIGS_PATH")]
+    #[arg(long, default_value = "data/target-configs", env = "AYNMSGUI_TARGET_CONFIGS_PATH")]
     pub target_configs_path: Option<PathBuf>,
 
     /// Path to current configs
-    #[arg(long, env = "AYNMSGUI_CURRENT_CONFIGS_PATH")]
+    #[arg(long, default_value = "data/current-configs", env = "AYNMSGUI_CURRENT_CONFIGS_PATH")]
     pub current_configs_path: Option<PathBuf>,
 
     /// Target branch name
@@ -69,19 +69,19 @@ pub struct AppConfig {
     pub device_password: Option<String>,
 
     /// Directory for images
-    #[arg(long, env = "AYNMSGUI_IMAGES_DIR")]
+    #[arg(long, default_value = "data/images", env = "AYNMSGUI_IMAGES_DIR")]
     pub images_dir: Option<PathBuf>,
 
     /// Path to assignments JSON file
     #[arg(
         long,
-        default_value = "assignments.json",
+        default_value = "data/assignments.json",
         env = "AYNMSGUI_ASSIGNMENTS_FILE"
     )]
     pub assignments_file: PathBuf,
 
     /// Directory for changes
-    #[arg(long, env = "AYNMSGUI_CHANGES_DIR")]
+    #[arg(long, default_value = "data/changes", env = "AYNMSGUI_CHANGES_DIR")]
     pub changes_dir: Option<PathBuf>,
 }
 
@@ -96,38 +96,26 @@ mod tests {
 
     #[test]
     fn test_defaults_parse_correctly() {
-        let cfg = parse_args(&["aynmsgui", "--htpasswd-file", "/etc/htpasswd"])
-            .expect("should parse with only required field");
+        let cfg = parse_args(&["aynmsgui"])
+            .expect("should parse with all defaults");
 
         assert_eq!(cfg.listen_addr, "::");
         assert_eq!(cfg.port, 8080);
-        assert_eq!(cfg.htpasswd_file, PathBuf::from("/etc/htpasswd"));
+        assert_eq!(cfg.htpasswd_file, PathBuf::from("data/htpasswd"));
         assert_eq!(cfg.session_ttl_secs, 86400);
-        assert!(cfg.inventory_path.is_none());
+        assert_eq!(cfg.inventory_path, Some(PathBuf::from("data/inventory.jsonl")));
         assert!(cfg.address_map_urls.is_empty());
         assert_eq!(cfg.address_map_refresh_secs, 60);
-        assert!(cfg.cfggen_base_dir.is_none());
-        assert!(cfg.target_configs_path.is_none());
-        assert!(cfg.current_configs_path.is_none());
+        assert_eq!(cfg.cfggen_base_dir, Some(PathBuf::from("data/cfggen")));
+        assert_eq!(cfg.target_configs_path, Some(PathBuf::from("data/target-configs")));
+        assert_eq!(cfg.current_configs_path, Some(PathBuf::from("data/current-configs")));
         assert_eq!(cfg.target_branch, "main");
         assert_eq!(cfg.current_branch, "main");
         assert!(cfg.device_username.is_none());
         assert!(cfg.device_password.is_none());
-        assert!(cfg.images_dir.is_none());
-        assert_eq!(cfg.assignments_file, PathBuf::from("assignments.json"));
-        assert!(cfg.changes_dir.is_none());
-    }
-
-    #[test]
-    fn test_missing_htpasswd_file_errors() {
-        let result = parse_args(&["aynmsgui"]);
-        assert!(
-            result.is_err(),
-            "should fail when --htpasswd-file is not provided"
-        );
-        let err = result.unwrap_err();
-        // The error kind should indicate a missing required argument
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        assert_eq!(cfg.images_dir, Some(PathBuf::from("data/images")));
+        assert_eq!(cfg.assignments_file, PathBuf::from("data/assignments.json"));
+        assert_eq!(cfg.changes_dir, Some(PathBuf::from("data/changes")));
     }
 
     #[test]

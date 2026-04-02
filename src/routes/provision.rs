@@ -26,10 +26,10 @@ pub async fn start_provision(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
-    // 1. Verify cfggen_base_dir is configured
+    // 1. Verify cfggen_base_dir is configured and exists
     let base_dir = match &state.config.cfggen_base_dir {
-        Some(p) => p.clone(),
-        None => {
+        Some(p) if p.join("logical-devices").exists() => p.clone(),
+        _ => {
             warn!("start_provision called but cfggen_base_dir is not configured");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -163,7 +163,10 @@ mod tests {
     }
 
     fn make_config_no_cfggen() -> AppConfig {
-        AppConfig::try_parse_from(&["aynmsgui", "--htpasswd-file", "/dev/null"])
+        AppConfig::try_parse_from(&[
+            "aynmsgui", "--htpasswd-file", "/dev/null",
+            "--cfggen-base-dir", "/nonexistent/cfggen",
+        ])
             .expect("test config parse")
     }
 

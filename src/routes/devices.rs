@@ -30,9 +30,12 @@ pub struct DeviceDetailView {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn list_devices(State(state): State<AppState>) -> Response {
-    let Some(base_dir) = &state.config.cfggen_base_dir else {
-        let html = "<html><body><p>Logical devices not configured</p></body></html>";
-        return Html(html).into_response();
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            let html = "<html><body><p>Logical devices not configured</p></body></html>";
+            return Html(html).into_response();
+        }
     };
 
     let devices_dir = base_dir.join("logical-devices");
@@ -123,12 +126,15 @@ pub async fn device_detail(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
-    let Some(base_dir) = &state.config.cfggen_base_dir else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Html("<html><body><p>Logical devices not configured</p></body></html>"),
-        )
-            .into_response();
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
     };
 
     debug!(name = %name, "Looking up logical device detail");
@@ -283,12 +289,15 @@ pub async fn update_ports(
     Path(name): Path<String>,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    let Some(base_dir) = &state.config.cfggen_base_dir else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Html("<html><body><p>Logical devices not configured</p></body></html>"),
-        )
-            .into_response();
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
     };
 
     debug!(name = %name, "Updating ports for logical device");
@@ -423,7 +432,10 @@ mod tests {
     use crate::state::AppState;
 
     fn make_test_config_no_cfggen() -> AppConfig {
-        AppConfig::try_parse_from(["aynmsgui", "--htpasswd-file", "/dev/null"])
+        AppConfig::try_parse_from([
+            "aynmsgui", "--htpasswd-file", "/dev/null",
+            "--cfggen-base-dir", "/nonexistent/cfggen",
+        ])
             .expect("test config parse")
     }
 

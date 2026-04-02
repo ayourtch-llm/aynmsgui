@@ -30,13 +30,16 @@ pub struct DiffDetailView {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 pub async fn diff_overview(State(state): State<AppState>) -> Response {
-    let (Some(target_path), Some(current_path)) = (
+    let (target_path, current_path) = match (
         &state.config.target_configs_path,
         &state.config.current_configs_path,
-    ) else {
-        let html = "<html><body><p>Config diff not configured: \
-                    target_configs_path or current_configs_path is not set</p></body></html>";
-        return Html(html).into_response();
+    ) {
+        (Some(t), Some(c)) if t.exists() && c.exists() => (t, c),
+        _ => {
+            let html = "<html><body><p>Config diff not configured: \
+                        target_configs_path or current_configs_path is not set</p></body></html>";
+            return Html(html).into_response();
+        }
     };
 
     debug!(
@@ -161,12 +164,15 @@ pub async fn diff_detail(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
-    let (Some(target_path), Some(current_path)) = (
+    let (target_path, current_path) = match (
         &state.config.target_configs_path,
         &state.config.current_configs_path,
-    ) else {
-        let html = "<html><body><p>Config diff not configured</p></body></html>";
-        return Html(html).into_response();
+    ) {
+        (Some(t), Some(c)) if t.exists() => (t, c),
+        _ => {
+            let html = "<html><body><p>Config diff not configured</p></body></html>";
+            return Html(html).into_response();
+        }
     };
 
     debug!(name = %name, "Loading config diff detail");
@@ -278,16 +284,16 @@ mod tests {
         let target_str;
         let current_str;
 
-        if let Some(p) = target {
-            target_str = p.to_str().unwrap().to_string();
-            args.push("--target-configs-path");
-            args.push(&target_str);
-        }
-        if let Some(p) = current {
-            current_str = p.to_str().unwrap().to_string();
-            args.push("--current-configs-path");
-            args.push(&current_str);
-        }
+        // Override defaults: use provided paths, or nonexistent paths for "not configured"
+        target_str = target.map(|p| p.to_str().unwrap().to_string())
+            .unwrap_or_else(|| "/nonexistent/target".to_string());
+        args.push("--target-configs-path");
+        args.push(&target_str);
+
+        current_str = current.map(|p| p.to_str().unwrap().to_string())
+            .unwrap_or_else(|| "/nonexistent/current".to_string());
+        args.push("--current-configs-path");
+        args.push(&current_str);
 
         AppConfig::try_parse_from(&args).expect("test config parse")
     }

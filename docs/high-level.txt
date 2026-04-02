@@ -1,0 +1,27 @@
+This would need to be a HTML GUI, which would unite the ../ay* crates into a single cohesive system:
+
+1) user login with modern security, using htpasswd authentication, with ability to also add
+later tacacs authentication using ../aytakaks
+
+2) browsing assets: user-friendly display of the assets collected by ../ayciam,
+with the union of their addresses seen by callhome implementation in ../aycallhome,
+and the moments.
+
+3) browsing logical switches: browsing the switch configuration templates prepared
+by ../aycfggen import, and the ability to use dropdown to change the service on each port.
+
+4) ability to kickstart the sync of software on given switches to the version in ../aycfggen 
+template - with the save being able to trigger the hooks to commit to git.
+
+5) ability to kickstart the recompile + configuration reprovisioning on the selected locical
+device or devices via ../aycfgprovision
+
+6) ability to view the differences between the target configurations and current configurations
+repositories, as per ../aycfgapply, and the ability to view both the tentative patches to be
+applied, as well as the directory log of the patches that were applied already.
+
+7) ability to unassign the physical asset from logical device, and assign another one,
+and ensuring that only one asset is ever applied to one logical device.
+
+
+

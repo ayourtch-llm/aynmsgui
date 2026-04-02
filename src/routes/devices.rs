@@ -7,7 +7,7 @@ use axum::{
 };
 use serde::Serialize;
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 
@@ -307,6 +307,46 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
     )
 }
 
+/// Compile a logical device config into a .cfg file in target-configs.
+fn compile_device_config(
+    device_name: &str,
+    cfggen_base: &std::path::Path,
+    app_config: &crate::config::AppConfig,
+) -> anyhow::Result<()> {
+    use aycfggen::fs_sources::{
+        FsHardwareTemplateSource, FsLogicalDeviceSource, FsServiceSource,
+        FsConfigTemplateSource, FsConfigElementSource, FsSoftwareImageSource,
+    };
+    use aycfggen::compile::compile_device;
+
+    let hw_source = FsHardwareTemplateSource::new(cfggen_base.join("hardware-templates"));
+    let device_source = FsLogicalDeviceSource::new(cfggen_base.join("logical-devices"));
+    let service_source = FsServiceSource::new(cfggen_base.join("services"));
+    let template_source = FsConfigTemplateSource::new(cfggen_base.join("config-templates"));
+    let element_source = FsConfigElementSource::new(cfggen_base.join("config-elements"));
+    let image_source = FsSoftwareImageSource::new(cfggen_base.join("software-images"));
+
+    let compiled = compile_device(
+        device_name,
+        &device_source,
+        &hw_source,
+        &service_source,
+        &template_source,
+        &element_source,
+        &image_source,
+    )?;
+
+    // Write to target-configs directory
+    if let Some(ref target_dir) = app_config.target_configs_path {
+        std::fs::create_dir_all(target_dir)?;
+        let cfg_path = target_dir.join(format!("{}.cfg", device_name));
+        std::fs::write(&cfg_path, compiled)?;
+        tracing::info!(path = %cfg_path.display(), "Wrote compiled config");
+    }
+
+    Ok(())
+}
+
 /// Load available service names from cfggen services directory.
 fn load_available_services(base_dir: &std::path::Path) -> Vec<String> {
     let services_dir = base_dir.join("services");
@@ -488,6 +528,15 @@ pub async fn update_ports(
             )),
         )
             .into_response();
+    }
+
+    info!(name = %name, "Port assignments saved, compiling config");
+
+    // Compile the device config to produce a .cfg file in target-configs
+    let compile_result = compile_device_config(&name, base_dir, &state.config);
+    match &compile_result {
+        Ok(()) => info!(name = %name, "Config compiled successfully"),
+        Err(e) => warn!(name = %name, error = %e, "Config compilation failed (port changes saved but .cfg not updated)"),
     }
 
     // 302 redirect back to device detail page

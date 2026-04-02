@@ -195,17 +195,20 @@ pub async fn device_detail(
 
     let config_json = serde_json::to_string_pretty(&raw_config).unwrap_or_else(|_| content.clone());
 
+    // Load available services from cfggen services directory
+    let available_services = load_available_services(base_dir);
+
     let detail = DeviceDetailView {
         name: name.clone(),
         config_json: config_json.clone(),
         raw_config,
     };
 
-    let html = render_device_detail(&detail);
+    let html = render_device_detail(&detail, &available_services);
     Html(html).into_response()
 }
 
-fn render_device_detail(d: &DeviceDetailView) -> String {
+fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> String {
     let hostname = d
         .raw_config
         .get("hostname")
@@ -219,6 +222,63 @@ fn render_device_detail(d: &DeviceDetailView) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("-");
 
+    // Build port assignment table with editable service dropdowns
+    let mut port_rows = String::new();
+    if let Some(modules) = d.raw_config.get("modules").and_then(|m| m.as_array()) {
+        for (mod_idx, module_val) in modules.iter().enumerate() {
+            if module_val.is_null() {
+                continue;
+            }
+            let sku = module_val.get("SKU").and_then(|v| v.as_str()).unwrap_or("-");
+            if let Some(ports) = module_val.get("ports").and_then(|p| p.as_array()) {
+                for port in ports {
+                    let port_name = port.get("name").and_then(|v| v.as_str()).unwrap_or("-");
+                    let current_service = port.get("service").and_then(|v| v.as_str()).unwrap_or("");
+
+                    let options: String = available_services.iter().map(|svc| {
+                        let selected = if svc == current_service { " selected" } else { "" };
+                        format!("<option value=\"{svc}\"{selected}>{svc}</option>",
+                            svc = html_escape(svc), selected = selected)
+                    }).collect();
+
+                    // If current service isn't in the list, add it as selected
+                    let extra = if !current_service.is_empty() && !available_services.iter().any(|s| s == current_service) {
+                        format!("<option value=\"{svc}\" selected>{svc}</option>",
+                            svc = html_escape(current_service))
+                    } else {
+                        String::new()
+                    };
+
+                    port_rows.push_str(&format!(
+                        "<tr><td>{mod_idx}</td><td>{sku}</td><td>{port_name}</td><td>\
+                         <select name=\"port_{mod_idx}_{port_name}\">{extra}{options}</select></td></tr>\n",
+                        mod_idx = mod_idx,
+                        sku = html_escape(sku),
+                        port_name = html_escape(port_name),
+                        extra = extra,
+                        options = options,
+                    ));
+                }
+            }
+        }
+    }
+
+    let ports_section = if port_rows.is_empty() {
+        "<p>No port assignments found in this device config.</p>".to_string()
+    } else {
+        format!(
+            r#"<form method="POST" action="/devices/{name}/ports">
+<table>
+<tr><th>Module</th><th>SKU</th><th>Port</th><th>Service</th></tr>
+{port_rows}
+</table>
+<button type="submit">Save Port Assignments</button>
+</form>"#,
+            name = d.name,
+            port_rows = port_rows,
+        )
+    };
+
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -230,15 +290,38 @@ fn render_device_detail(d: &DeviceDetailView) -> String {
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>Role</th><td>{role}</td></tr>
 </table>
-<h2>Configuration</h2>
+<h2>Port Assignments</h2>
+{ports_section}
+<h2>Raw Configuration</h2>
+<details><summary>Show JSON</summary>
 <pre>{config_json}</pre>
+</details>
+<p><a href="/devices">Back to Devices</a></p>
 </body>
 </html>"#,
         name = d.name,
         hostname = hostname,
         role = role,
+        ports_section = ports_section,
         config_json = html_escape(&d.config_json),
     )
+}
+
+/// Load available service names from cfggen services directory.
+fn load_available_services(base_dir: &std::path::Path) -> Vec<String> {
+    let services_dir = base_dir.join("services");
+    let mut services = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&services_dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                if let Some(name) = entry.file_name().to_str() {
+                    services.push(name.to_string());
+                }
+            }
+        }
+    }
+    services.sort();
+    services
 }
 
 fn html_escape(s: &str) -> String {
@@ -356,17 +439,27 @@ pub async fn update_ports(
         }
     };
 
-    // Ensure ports is an object; create it if absent
-    if config.get("ports").is_none() {
-        config["ports"] = serde_json::Value::Object(serde_json::Map::new());
-    }
-
-    let ports = config["ports"].as_object_mut().expect("ports is an object");
-
-    for (key, value) in &form {
-        if let Some(port_name) = key.strip_prefix("port_") {
-            debug!(port = %port_name, service = %value, "Updating port service assignment");
-            ports.insert(port_name.to_string(), serde_json::Value::String(value.clone()));
+    // Update port service assignments in modules[].ports[].service
+    // Form fields are named "port_{mod_idx}_{port_name}" with the service as value
+    if let Some(modules) = config.get_mut("modules").and_then(|m| m.as_array_mut()) {
+        for (key, new_service) in &form {
+            if let Some(rest) = key.strip_prefix("port_") {
+                // Parse "mod_idx_port_name" — split on first underscore
+                if let Some((idx_str, port_name)) = rest.split_once('_') {
+                    if let Ok(mod_idx) = idx_str.parse::<usize>() {
+                        if let Some(module) = modules.get_mut(mod_idx) {
+                            if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
+                                for port in ports.iter_mut() {
+                                    if port.get("name").and_then(|n| n.as_str()) == Some(port_name) {
+                                        debug!(module = mod_idx, port = %port_name, service = %new_service, "Updating port service");
+                                        port["service"] = serde_json::Value::String(new_service.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -609,21 +702,27 @@ mod tests {
         let devices_dir = dir.path().join("logical-devices");
         std::fs::create_dir_all(&devices_dir).unwrap();
 
+        // Real aycfggen structure: modules[].ports[].{name, service}
         let initial_json = r#"{
-  "hostname": "sw01",
-  "role": "access",
-  "ports": {
-    "Gi0/1": "old-service",
-    "Gi0/2": "old-service2",
-    "Gi0/3": "unused"
-  }
+  "config-template": "test.conf",
+  "modules": [
+    {
+      "SKU": "C9300-48P",
+      "ports": [
+        {"name": "Gi1/0/1", "service": "old-service"},
+        {"name": "Gi1/0/2", "service": "old-service2"},
+        {"name": "Gi1/0/3", "service": "unused"}
+      ]
+    }
+  ]
 }"#;
         let device_file = devices_dir.join("switch-01.json");
         std::fs::write(&device_file, initial_json).unwrap();
 
         let app = build_app_with_cfggen(dir.path());
 
-        let body = "port_Gi0%2F1=uplink&port_Gi0%2F2=access-vlan20";
+        // Form fields: port_{mod_idx}_{port_name}=new_service
+        let body = "port_0_Gi1%2F0%2F1=uplink&port_0_Gi1%2F0%2F2=access-vlan20";
 
         let req = Request::builder()
             .method(Method::POST)
@@ -640,31 +739,18 @@ mod tests {
             resp.status()
         );
 
-        // Verify the redirect target
         let location = resp.headers().get("location").unwrap().to_str().unwrap();
         assert_eq!(location, "/devices/switch-01");
 
         // Verify file was updated
         let updated_content = std::fs::read_to_string(&device_file).unwrap();
         let updated: serde_json::Value = serde_json::from_str(&updated_content).unwrap();
-        let ports = updated["ports"].as_object().unwrap();
+        let ports = updated["modules"][0]["ports"].as_array().unwrap();
 
-        assert_eq!(
-            ports.get("Gi0/1").and_then(|v| v.as_str()),
-            Some("uplink"),
-            "Gi0/1 should be updated to 'uplink'"
-        );
-        assert_eq!(
-            ports.get("Gi0/2").and_then(|v| v.as_str()),
-            Some("access-vlan20"),
-            "Gi0/2 should be updated to 'access-vlan20'"
-        );
-        // Gi0/3 was not in the form — it should remain unchanged
-        assert_eq!(
-            ports.get("Gi0/3").and_then(|v| v.as_str()),
-            Some("unused"),
-            "Gi0/3 should remain 'unused'"
-        );
+        let svc = |idx: usize| ports[idx].get("service").and_then(|v| v.as_str());
+        assert_eq!(svc(0), Some("uplink"), "Gi1/0/1 should be updated to 'uplink'");
+        assert_eq!(svc(1), Some("access-vlan20"), "Gi1/0/2 should be updated to 'access-vlan20'");
+        assert_eq!(svc(2), Some("unused"), "Gi1/0/3 should remain 'unused'");
     }
 
     // ── Test 6: update_ports not configured ──────────────────────────────────

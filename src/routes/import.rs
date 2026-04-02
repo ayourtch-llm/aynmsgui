@@ -203,34 +203,16 @@ pub async fn import_device(
         .into_response();
     }
 
-    // 4. Write each discovered device to the inventory JSONL file
+    // 4. Register each discovered device via ayciam (idempotent, proper S-tags, dedup)
     let mut results_html = String::new();
     let mut registered_count = 0;
 
     for metadata in &metadata_list {
-        let record = ayciam::AssetRecord {
-            asset_tag: format!("IMPORT-{}", metadata.serial_number),
-            vendor: metadata.vendor.clone(),
-            flavor: metadata.flavor.clone(),
-            sku: metadata.sku.clone(),
-            serial_number: metadata.serial_number.clone(),
-            platform: metadata.platform.clone(),
-            mac_addresses: metadata.mac_addresses.clone(),
-            radio_mac_addresses: metadata.radio_mac_addresses.clone(),
-            owner: "aynmsgui".to_string(),
-            registered_at: chrono::Utc::now().to_rfc3339(),
-            modules: metadata.modules.iter().map(|m| ayciam::ModuleRecord {
-                sku: m.sku.clone(),
-                serial_number: m.serial_number.clone(),
-                mac_address: m.mac_address.clone(),
-            }).collect(),
-        };
-
-        // Append to JSONL file
-        match append_jsonl(&inv_path, &record) {
-            Ok(()) => {
+        match ayciam::ensure_registered(&inv_path, metadata, "aynmsgui").await {
+            Ok(record) => {
                 info!(
                     serial = %record.serial_number,
+                    asset_tag = %record.asset_tag,
                     sku = %record.sku,
                     ip = %ip,
                     "Imported device"
@@ -240,6 +222,7 @@ pub async fn import_device(
                     r#"<div style="border:1px solid #ccc; padding:1rem; margin:0.5rem 0;">
 <h3>Device: {serial}</h3>
 <table>
+<tr><th>Asset Tag</th><td>{tag}</td></tr>
 <tr><th>Serial</th><td>{serial}</td></tr>
 <tr><th>SKU</th><td>{sku}</td></tr>
 <tr><th>Platform</th><td>{platform}</td></tr>
@@ -247,6 +230,7 @@ pub async fn import_device(
 <tr><th>MACs</th><td>{macs}</td></tr>
 </table>
 </div>"#,
+                    tag = html_escape(&record.asset_tag),
                     serial = html_escape(&record.serial_number),
                     sku = html_escape(&record.sku),
                     platform = html_escape(record.platform.as_deref().unwrap_or("-")),
@@ -255,7 +239,7 @@ pub async fn import_device(
                 ));
             }
             Err(e) => {
-                warn!(serial = %metadata.serial_number, error = %e, "Failed to write to inventory");
+                warn!(serial = %metadata.serial_number, error = %e, "Failed to register device");
                 results_html.push_str(&format!(
                     "<p style='color:red'>Failed to register {}: {}</p>",
                     html_escape(&metadata.serial_number),
@@ -284,18 +268,6 @@ pub async fn import_device(
         results = results_html,
     ))
     .into_response()
-}
-
-/// Append an AssetRecord as a JSON line to the inventory file.
-fn append_jsonl(path: &std::path::Path, record: &ayciam::AssetRecord) -> anyhow::Result<()> {
-    use std::io::Write;
-    let line = serde_json::to_string(record)?;
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{}", line)?;
-    Ok(())
 }
 
 /// HTML-escape a string to prevent XSS from device-supplied data.

@@ -113,6 +113,15 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
     <div class="label">Pending Diffs</div>
   </a>
 </div>
+<h2 style="margin-top:2rem;">Actions</h2>
+<div class="cards">
+  <a class="card" href="/import">
+    <div class="label">Import Device</div>
+  </a>
+  <a class="card" href="/extract">
+    <div class="label">Extract Config</div>
+  </a>
+</div>
 </body>
 </html>"#,
         asset_count = asset_count,

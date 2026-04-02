@@ -3,6 +3,7 @@ pub mod assignments;
 pub mod config_diff;
 pub mod dashboard;
 pub mod devices;
+pub mod extract;
 pub mod import;
 pub mod login;
 pub mod provision;
@@ -29,6 +30,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(software::routes())
         .merge(provision::routes())
         .merge(import::routes())
+        .merge(extract::routes())
         .layer(middleware::from_fn_with_state(sessions, auth_middleware));
 
     Router::new()

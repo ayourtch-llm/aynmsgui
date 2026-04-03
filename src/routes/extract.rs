@@ -150,11 +150,15 @@ pub async fn extract_device(
     ];
 
     let mut collected = String::new();
+    let mut show_version_output = None;
 
     for cmd in &commands {
         match conn.run_cmd(cmd).await {
             Ok(output) => {
                 collected.push_str(&format!("!!! aycfgextract: {} !!!\n{}\n", cmd, output));
+                if *cmd == "show version" {
+                    show_version_output = Some(output);
+                }
             }
             Err(e) => {
                 warn!(ip = %ip, cmd = %cmd, error = %e, "Failed to run command");
@@ -177,6 +181,21 @@ pub async fn extract_device(
     }
 
     let _ = conn.disconnect().await;
+
+    // Register the device in known_devices from show version output
+    if let Some(ref sv_output) = show_version_output {
+        if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(sv_output) {
+            if !sv_info.serial_number.is_empty() {
+                state.register_known_device(
+                    &sv_info.serial_number,
+                    &ip,
+                    if sv_info.hostname.is_empty() { None } else { Some(sv_info.hostname.as_str()) },
+                    if sv_info.platform.is_empty() { None } else { Some(sv_info.platform.as_str()) },
+                    if sv_info.software_image.is_empty() { None } else { Some(sv_info.software_image.as_str()) },
+                ).await;
+            }
+        }
+    }
 
     // Save collected output to temp file
     let saved_path = std::path::PathBuf::from(format!("/tmp/aynmsgui-extract-{}.txt", ip));

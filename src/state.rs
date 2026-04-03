@@ -20,6 +20,45 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Register or update a known device by serial + IP address.
+    /// Called after successful SSH connections during import/extract operations.
+    pub async fn register_known_device(
+        &self,
+        serial: &str,
+        ip: &str,
+        hostname: Option<&str>,
+        model: Option<&str>,
+        version: Option<&str>,
+    ) {
+        let mut devices = self.known_devices.write().await;
+        let device = devices.entry(serial.to_string()).or_insert_with(|| {
+            aycallhome::Device {
+                serial: serial.to_string(),
+                version: None,
+                hostname: None,
+                model: None,
+                token: None,
+                last_ipv4: None,
+                last_ipv6: None,
+                last_seen_ipv4: None,
+                last_seen_ipv6: None,
+                first_seen: Some(chrono::Utc::now()),
+            }
+        });
+        device.last_ipv4 = Some(ip.to_string());
+        device.last_seen_ipv4 = Some(chrono::Utc::now());
+        if let Some(h) = hostname {
+            device.hostname = Some(h.to_string());
+        }
+        if let Some(m) = model {
+            device.model = Some(m.to_string());
+        }
+        if let Some(v) = version {
+            device.version = Some(v.to_string());
+        }
+        tracing::info!(serial = %serial, ip = %ip, "Registered/updated known device");
+    }
+
     pub fn new(
         config: AppConfig,
         htpasswd: HtpasswdStore,

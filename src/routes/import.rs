@@ -217,6 +217,15 @@ pub async fn import_device(
                     ip = %ip,
                     "Imported device"
                 );
+
+                // Update known devices so /retrieve and /software can find this device
+                state.register_known_device(
+                    &record.serial_number,
+                    &ip,
+                    None, // hostname not available from metadata
+                    record.platform.as_deref(),
+                    None,
+                ).await;
                 registered_count += 1;
                 results_html.push_str(&format!(
                     r#"<div style="border:1px solid #ccc; padding:1rem; margin:0.5rem 0;">

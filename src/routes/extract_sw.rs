@@ -141,6 +141,21 @@ pub async fn extract_sw_device(
         }
     };
 
+    // Run show version to register device in known_devices before extraction
+    if let Ok(sv_output) = conn.run_cmd("show version").await {
+        if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(&sv_output) {
+            if !sv_info.serial_number.is_empty() {
+                state.register_known_device(
+                    &sv_info.serial_number,
+                    &ip,
+                    if sv_info.hostname.is_empty() { None } else { Some(sv_info.hostname.as_str()) },
+                    if sv_info.platform.is_empty() { None } else { Some(sv_info.platform.as_str()) },
+                    if sv_info.software_image.is_empty() { None } else { Some(sv_info.software_image.as_str()) },
+                ).await;
+            }
+        }
+    }
+
     // Use ayiosupdate-lib extract_from_device with ExtractionKind::Image
     let request = ayiosupdate_lib::extract::ExtractionRequest {
         kind: ayiosupdate_lib::extract::ExtractionKind::Image,

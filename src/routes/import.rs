@@ -144,6 +144,11 @@ pub async fn import_device(
         }
     };
 
+    // Also collect commands needed for config extraction pipeline
+    let show_ip_brief = conn.run_cmd("show ip interface brief").await.unwrap_or_default();
+    let show_intf_status = conn.run_cmd("show interfaces status").await.unwrap_or_default();
+    let show_running = conn.run_cmd("show running-config").await.unwrap_or_default();
+
     let _ = conn.disconnect().await;
 
     // 3. Parse outputs into DeviceMetadata
@@ -240,8 +245,7 @@ pub async fn import_device(
         }
     }
 
-    // 5. Auto-name logical device if hostname matches pattern
-    //    Pattern: "XXXXX-X999-S9999" where the S-portion is the asset tag
+    // 5. Run config extraction pipeline + auto-name logical device
     if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(&show_version) {
         let hostname = &sv_info.hostname;
 
@@ -256,108 +260,111 @@ pub async fn import_device(
             ).await;
         }
 
+        // Determine logical device name: if hostname matches the naming convention,
+        // use the prefix; otherwise use the full hostname.
         let hostname_re = Regex::new(r"^([A-Za-z0-9]+-X?[0-9]{3})-(S[0-9]{4,5})$").unwrap();
-        if let Some(caps) = hostname_re.captures(hostname) {
-            let logical_name = &caps[1];
+        let logical_name = if let Some(caps) = hostname_re.captures(hostname) {
+            let name = caps[1].to_string();
             let asset_tag = &caps[2];
-
-            // Verify asset tag exists in the inventory (look up via cache)
             let tag_matches = state.asset_cache.as_ref()
                 .map(|cache| !cache.lookup_by_asset_tag(asset_tag).is_empty())
                 .unwrap_or(false);
             if tag_matches {
-                info!(
-                    hostname = %hostname,
-                    logical_name = %logical_name,
-                    asset_tag = %asset_tag,
-                    "Hostname matches naming convention, auto-naming logical device"
-                );
+                info!(hostname = %hostname, logical_name = %name, asset_tag = %asset_tag,
+                    "Hostname matches naming convention, auto-naming logical device");
                 results_html.push_str(&format!(
                     "<p>Auto-detected logical device name: <strong>{}</strong> (asset tag {} matches)</p>",
-                    html_escape(logical_name),
-                    html_escape(asset_tag),
+                    html_escape(&name), html_escape(asset_tag),
                 ));
+                name
+            } else {
+                hostname.to_string()
+            }
+        } else {
+            hostname.to_string()
+        };
 
-                // Run the extract pipeline to create the logical device config
-                // The pipeline uses the full hostname; we then rename the result
-                if let Some(ref base_dir) = state.config.cfggen_base_dir {
-                    let ld_dir = base_dir.join("logical-devices");
-                    if ld_dir.exists() {
-                        // Save collected show outputs for extraction
-                        let collected = format!(
-                            "!!! aycfgextract: show version !!!\n{}\n!!! aycfgextract: show inventory !!!\n{}\n",
-                            show_version, show_inventory
-                        );
-                        let saved_path = std::path::PathBuf::from(format!("/tmp/aynmsgui-import-{}.txt", ip));
-                        if let Ok(()) = std::fs::write(&saved_path, &collected) {
-                            let dirs = aycfggen::extract_cli::ResolvedExtractDirs {
-                                hardware_templates: base_dir.join("hardware-templates"),
-                                logical_devices: ld_dir.clone(),
-                                services: base_dir.join("services"),
-                                config_templates: base_dir.join("config-templates"),
-                                config_elements: base_dir.join("config-elements"),
-                                configs: base_dir.join("configs"),
-                            };
+        // Run the extraction pipeline with all collected show commands
+        if let Some(ref base_dir) = state.config.cfggen_base_dir {
+            let ld_dir = base_dir.join("logical-devices");
+            let collected = format!(
+                "!!! aycfgextract: show version !!!\n{}\n\
+                 !!! aycfgextract: show inventory !!!\n{}\n\
+                 !!! aycfgextract: show ip interface brief !!!\n{}\n\
+                 !!! aycfgextract: show interfaces status !!!\n{}\n\
+                 !!! aycfgextract: show running-config !!!\n{}\n",
+                show_version, show_inventory, show_ip_brief, show_intf_status, show_running
+            );
+            let saved_path = std::path::PathBuf::from(format!("/tmp/aynmsgui-import-{}.txt", ip));
+            if let Ok(()) = std::fs::write(&saved_path, &collected) {
+                let dirs = aycfggen::extract_cli::ResolvedExtractDirs {
+                    hardware_templates: base_dir.join("hardware-templates"),
+                    logical_devices: ld_dir.clone(),
+                    services: base_dir.join("services"),
+                    config_templates: base_dir.join("config-templates"),
+                    config_elements: base_dir.join("config-elements"),
+                    configs: base_dir.join("configs"),
+                };
 
-                            for subdir in [&dirs.hardware_templates, &dirs.logical_devices, &dirs.services,
-                                          &dirs.config_templates, &dirs.config_elements, &dirs.configs] {
-                                let _ = std::fs::create_dir_all(subdir);
-                            }
+                for subdir in [&dirs.hardware_templates, &dirs.logical_devices, &dirs.services,
+                              &dirs.config_templates, &dirs.config_elements, &dirs.configs] {
+                    let _ = std::fs::create_dir_all(subdir);
+                }
 
-                            let saved = saved_path.clone();
-                            let extract_result = tokio::task::spawn_blocking(move || {
-                                aycfggen::extract_cli::run_extract_offline(
-                                    &saved,
-                                    &dirs,
-                                    None,
-                                    false,
-                                    false,
-                                    &[],
-                                )
-                            })
-                            .await;
+                let saved = saved_path.clone();
+                let extract_result = tokio::task::spawn_blocking(move || {
+                    aycfggen::extract_cli::run_extract_offline(
+                        &saved, &dirs, None, false, false, &[],
+                    )
+                })
+                .await;
 
-                            match extract_result {
-                                Ok(Ok(())) => {
-                                    // Extraction creates the config under the full hostname.
-                                    // Rename to the logical name (first part before -S tag).
-                                    let full_name_dir = ld_dir.join(hostname);
-                                    let full_name_json = ld_dir.join(format!("{}.json", hostname));
-                                    let target_dir = ld_dir.join(logical_name);
-                                    let target_json = ld_dir.join(format!("{}.json", logical_name));
+                match extract_result {
+                    Ok(Ok(())) => {
+                        // Extraction creates config under the full hostname.
+                        // If we have a shortened logical name, rename.
+                        if logical_name != *hostname {
+                            let full_dir = ld_dir.join(hostname);
+                            let full_json = ld_dir.join(format!("{}.json", hostname));
+                            let target_dir = ld_dir.join(&logical_name);
+                            let target_json = ld_dir.join(format!("{}.json", logical_name));
 
-                                    if full_name_dir.exists() && !target_dir.exists() {
-                                        if let Err(e) = std::fs::rename(&full_name_dir, &target_dir) {
-                                            warn!(error = %e, "Failed to rename logical device directory");
-                                        } else {
-                                            info!(from = %hostname, to = %logical_name, "Renamed logical device directory");
-                                        }
-                                    } else if full_name_json.exists() && !target_json.exists() {
-                                        if let Err(e) = std::fs::rename(&full_name_json, &target_json) {
-                                            warn!(error = %e, "Failed to rename logical device JSON");
-                                        } else {
-                                            info!(from = %hostname, to = %logical_name, "Renamed logical device JSON");
-                                        }
-                                    }
-
-                                    results_html.push_str(&format!(
-                                        "<p style='color:green'>Logical device <strong>{}</strong> created via extraction pipeline.</p>",
-                                        html_escape(logical_name),
-                                    ));
+                            if full_dir.exists() {
+                                if target_dir.exists() {
+                                    // Target exists — merge by removing old and renaming new
+                                    let _ = std::fs::remove_dir_all(&target_dir);
                                 }
-                                Ok(Err(e)) => {
-                                    warn!(logical_name = %logical_name, error = %e, "Extraction pipeline failed");
-                                    results_html.push_str(&format!(
-                                        "<p style='color:orange'>Extraction pipeline failed for {}: {}</p>",
-                                        html_escape(logical_name),
-                                        html_escape(&format!("{e}")),
-                                    ));
+                                if let Err(e) = std::fs::rename(&full_dir, &target_dir) {
+                                    warn!(error = %e, "Failed to rename logical device directory");
+                                } else {
+                                    info!(from = %hostname, to = %logical_name, "Renamed logical device directory");
                                 }
-                                Err(e) => {
-                                    warn!(error = %e, "spawn_blocking panicked during extraction");
+                            } else if full_json.exists() {
+                                if target_json.exists() {
+                                    let _ = std::fs::remove_file(&target_json);
+                                }
+                                if let Err(e) = std::fs::rename(&full_json, &target_json) {
+                                    warn!(error = %e, "Failed to rename logical device JSON");
+                                } else {
+                                    info!(from = %hostname, to = %logical_name, "Renamed logical device JSON");
                                 }
                             }
                         }
+
+                        results_html.push_str(&format!(
+                            "<p style='color:green'>Config extracted for logical device <strong>{}</strong>.</p>",
+                            html_escape(&logical_name),
+                        ));
+                    }
+                    Ok(Err(e)) => {
+                        warn!(logical_name = %logical_name, error = %e, "Extraction pipeline failed");
+                        results_html.push_str(&format!(
+                            "<p style='color:orange'>Config extraction failed: {}</p>",
+                            html_escape(&format!("{e}")),
+                        ));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "spawn_blocking panicked during extraction");
                     }
                 }
             }

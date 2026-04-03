@@ -344,7 +344,9 @@ fn render_asset_detail(d: &AssetDetailView) -> String {
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>Model</th><td>{model}</td></tr>
 <tr><th>Last IPv4</th><td>{last_ipv4}</td></tr>
+<tr><th>Last Seen IPv4</th><td>{last_seen_ipv4}</td></tr>
 <tr><th>Last IPv6</th><td>{last_ipv6}</td></tr>
+<tr><th>Last Seen IPv6</th><td>{last_seen_ipv6}</td></tr>
 <tr><th>Logical Device(s)</th><td>{logical_devices}</td></tr>
 </table>
 <h2>Modules</h2>
@@ -364,7 +366,9 @@ fn render_asset_detail(d: &AssetDetailView) -> String {
         hostname = d.hostname.as_deref().unwrap_or("-"),
         model = d.model.as_deref().unwrap_or("-"),
         last_ipv4 = format_ip_with_timestamp(d.last_ipv4.as_deref(), d.last_seen_ipv4.as_deref()),
+        last_seen_ipv4 = d.last_seen_ipv4.as_deref().unwrap_or("-"),
         last_ipv6 = format_ip_with_timestamp(d.last_ipv6.as_deref(), d.last_seen_ipv6.as_deref()),
+        last_seen_ipv6 = d.last_seen_ipv6.as_deref().unwrap_or("-"),
         logical_devices = d.logical_devices_html,
         modules = modules_html,
     )

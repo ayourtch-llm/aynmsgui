@@ -21,8 +21,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
         "N/A".to_string()
     };
 
-    // Count known devices
-    let known_count = state.known_devices.read().await.len();
+    // Count seen assets
+    let seen_count = state.seen_assets.read().await.len();
 
     // Count logical devices (JSON files in cfggen_base_dir/logical-devices/)
     let device_count = if let Some(ref dir) = state.config.cfggen_base_dir {
@@ -58,7 +58,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
 
     debug!(
         assets = %asset_count,
-        known_devices = known_count,
+        seen_assets = seen_count,
         logical_devices = %device_count,
         assignments = assignment_count,
         pending_diffs = %config_count,
@@ -97,8 +97,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
     <div class="label">Assets</div>
   </a>
   <a class="card" href="/devices">
-    <div class="count">{known_count}</div>
-    <div class="label">Known Devices</div>
+    <div class="count">{seen_count}</div>
+    <div class="label">Seen Assets</div>
   </a>
   <a class="card" href="/devices">
     <div class="count">{device_count}</div>
@@ -131,7 +131,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
 </body>
 </html>"#,
         asset_count = asset_count,
-        known_count = known_count,
+        seen_count = seen_count,
         device_count = device_count,
         assignment_count = assignment_count,
         config_count = config_count,
@@ -286,8 +286,8 @@ mod tests {
         std::fs::write(target_dir.join("readme.txt"), "ignore me").unwrap();
 
         // ── Known devices: 1 ─────────────────────────────────────────────────
-        let mut known_devices = IndexMap::new();
-        known_devices.insert(
+        let mut seen_assets = IndexMap::new();
+        seen_assets.insert(
             "SN-001".to_string(),
             aycallhome::Device {
                 serial: "SN-001".to_string(),
@@ -315,7 +315,7 @@ mod tests {
         ])
         .expect("test config parse");
 
-        let state = AppState::new(config, make_test_htpasswd(), Some((cache, inv_path)), known_devices);
+        let state = AppState::new(config, make_test_htpasswd(), Some((cache, inv_path)), seen_assets);
 
         // Add an assignment so we can verify the count
         {
@@ -338,7 +338,7 @@ mod tests {
         // Known device count: 1
         assert!(
             body.contains(">1<"),
-            "expected known device count 1 in body, got: {}",
+            "expected seen asset count 1 in body, got: {}",
             body
         );
 

@@ -63,7 +63,7 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
         .unwrap_or("")
         .to_string();
 
-    let devices = state.known_devices.read().await;
+    let devices = state.seen_assets.read().await;
     let mut device_rows = String::new();
     for (serial, d) in devices.iter() {
         let hostname = d.hostname.as_deref().unwrap_or("-");
@@ -86,7 +86,7 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
 <head><meta charset="UTF-8"><title>Retrieve Current Configs</title></head>
 <body>
 <h1>Retrieve Current Configs</h1>
-<p>SSH into all known devices and commit their running configs to the current-configs repo.</p>
+<p>SSH into all seen assets and commit their running configs to the current-configs repo.</p>
 <form method="POST" action="/retrieve">
   <label for="username">Username:</label><br>
   <input type="text" id="username" name="username" value="{default_username}" required><br><br>
@@ -94,7 +94,7 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
   <input type="password" id="password" name="password" required><br><br>
   <button type="submit">Retrieve Current Configs</button>
 </form>
-<h2>Known Devices ({device_count})</h2>
+<h2>Seen Assets ({device_count})</h2>
 <table border="1" cellpadding="4">
 <tr><th>Serial</th><th>Hostname</th><th>IPv4</th><th>IPv6</th></tr>
 {device_rows}
@@ -209,9 +209,9 @@ pub async fn retrieve_configs(
         }
     };
 
-    // 5. Convert known_devices to aycfgapply::devices::Device
-    let known = state.known_devices.read().await;
-    let device_map: IndexMap<String, aycfgapply::devices::Device> = known
+    // 5. Convert seen assets to aycfgapply::devices::Device
+    let seen = state.seen_assets.read().await;
+    let device_map: IndexMap<String, aycfgapply::devices::Device> = seen
         .iter()
         .map(|(serial, d)| {
             let aycfg_device = aycfgapply::devices::Device {
@@ -224,7 +224,7 @@ pub async fn retrieve_configs(
             (serial.clone(), aycfg_device)
         })
         .collect();
-    drop(known);
+    drop(seen);
 
     info!(
         device_count = device_map.len(),

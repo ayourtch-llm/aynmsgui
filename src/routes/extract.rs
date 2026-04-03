@@ -182,11 +182,11 @@ pub async fn extract_device(
 
     let _ = conn.disconnect().await;
 
-    // Register the device in known_devices from show version output
+    // Register the device in seen_assets from show version output
     if let Some(ref sv_output) = show_version_output {
         if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(sv_output) {
             if !sv_info.serial_number.is_empty() {
-                state.register_known_device(
+                state.register_seen_asset(
                     &sv_info.serial_number,
                     &ip,
                     if sv_info.hostname.is_empty() { None } else { Some(sv_info.hostname.as_str()) },

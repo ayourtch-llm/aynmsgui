@@ -218,8 +218,8 @@ pub async fn import_device(
                     "Imported device"
                 );
 
-                // Update known devices so /retrieve and /software can find this device
-                state.register_known_device(
+                // Update seen assets so /retrieve and /software can find this device
+                state.register_seen_asset(
                     &record.serial_number,
                     &ip,
                     None, // hostname not available from metadata

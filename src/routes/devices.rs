@@ -594,13 +594,13 @@ async fn build_assign_candidates(
         .map(|base| serial_to_device_names(&load_all_device_configs(base)))
         .unwrap_or_default();
 
-    let known_devices = state.known_devices.read().await;
+    let seen_assets = state.seen_assets.read().await;
 
     let mut sorted: Vec<_> = matching_serials
         .into_iter()
         .filter(|serial| !used_serials.contains_key(serial))
         .filter_map(|serial| {
-            let device = known_devices.get(&serial)?;
+            let device = seen_assets.get(&serial)?;
             // Must have called home at least once
             let last_seen = match (device.last_seen_ipv6, device.last_seen_ipv4) {
                 (Some(v6), _) => v6,

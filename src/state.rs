@@ -14,7 +14,7 @@ pub struct AppState {
     pub asset_cache: Option<Arc<ayciam::AssetCache>>,
     /// Path to the JSONL inventory file; present when asset_cache is Some.
     pub asset_inventory_path: Option<Arc<PathBuf>>,
-    pub known_devices: Arc<RwLock<indexmap::IndexMap<String, aycallhome::Device>>>,
+    pub seen_assets: Arc<RwLock<indexmap::IndexMap<String, aycallhome::Device>>>,
     pub assignments: Arc<RwLock<AssignmentMap>>,
     pub operations: Arc<RwLock<crate::sse::OperationTracker>>,
 }
@@ -31,9 +31,9 @@ pub fn ssh_target(ip: &str, port: u16) -> String {
 }
 
 impl AppState {
-    /// Register or update a known device by serial + IP address.
+    /// Register or update a seen asset by serial + IP address.
     /// Called after successful SSH connections during import/extract operations.
-    pub async fn register_known_device(
+    pub async fn register_seen_asset(
         &self,
         serial: &str,
         ip: &str,
@@ -41,7 +41,7 @@ impl AppState {
         model: Option<&str>,
         version: Option<&str>,
     ) {
-        let mut devices = self.known_devices.write().await;
+        let mut devices = self.seen_assets.write().await;
         let device = devices.entry(serial.to_string()).or_insert_with(|| {
             aycallhome::Device {
                 serial: serial.to_string(),
@@ -74,19 +74,19 @@ impl AppState {
         if let Some(v) = version {
             device.version = Some(v.to_string());
         }
-        tracing::info!(serial = %serial, ip = %ip, "Registered/updated known device");
+        tracing::info!(serial = %serial, ip = %ip, "Registered/updated seen asset");
 
         // Persist to disk
-        let path = &self.config.known_devices_file;
+        let path = &self.config.seen_assets_file;
         let devices_vec: Vec<&aycallhome::Device> = devices.values().collect();
         match serde_json::to_string_pretty(&devices_vec) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(path, &json) {
-                    tracing::warn!(path = %path.display(), error = %e, "Failed to save known devices");
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to save seen assets");
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to serialize known devices");
+                tracing::warn!(error = %e, "Failed to serialize seen assets");
             }
         }
     }
@@ -95,7 +95,7 @@ impl AppState {
         config: AppConfig,
         htpasswd: HtpasswdStore,
         asset_cache: Option<(ayciam::AssetCache, PathBuf)>,
-        known_devices: indexmap::IndexMap<String, aycallhome::Device>,
+        seen_assets: indexmap::IndexMap<String, aycallhome::Device>,
     ) -> Self {
         let (cache_opt, path_opt) = match asset_cache {
             Some((cache, path)) => (Some(Arc::new(cache)), Some(Arc::new(path))),
@@ -113,7 +113,7 @@ impl AppState {
             sessions: Arc::new(RwLock::new(sessions)),
             asset_cache: cache_opt,
             asset_inventory_path: path_opt,
-            known_devices: Arc::new(RwLock::new(known_devices)),
+            seen_assets: Arc::new(RwLock::new(seen_assets)),
             assignments: Arc::new(RwLock::new(assignments)),
             operations: Arc::new(RwLock::new(crate::sse::OperationTracker::new())),
         }

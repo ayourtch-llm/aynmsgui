@@ -147,22 +147,22 @@ async fn main() {
         None
     };
 
-    // Load known devices: first from local file, then merge from callhome URLs
-    let mut known_devices = indexmap::IndexMap::new();
+    // Load seen assets: first from local file, then merge from callhome URLs
+    let mut seen_assets = indexmap::IndexMap::new();
 
-    // Load from local known_devices.json (persisted from previous sessions)
-    if cfg.known_devices_file.exists() {
-        match std::fs::read_to_string(&cfg.known_devices_file) {
+    // Load from local seen_assets.json (persisted from previous sessions)
+    if cfg.seen_assets_file.exists() {
+        match std::fs::read_to_string(&cfg.seen_assets_file) {
             Ok(content) if !content.trim().is_empty() => {
                 match serde_json::from_str::<Vec<aycallhome::Device>>(&content) {
                     Ok(devices) => {
-                        info!(count = devices.len(), path = %cfg.known_devices_file.display(), "Loaded known devices from file");
+                        info!(count = devices.len(), path = %cfg.seen_assets_file.display(), "Loaded seen assets from file");
                         for d in devices {
-                            known_devices.insert(d.serial.clone(), d);
+                            seen_assets.insert(d.serial.clone(), d);
                         }
                     }
                     Err(e) => {
-                        warn!(path = %cfg.known_devices_file.display(), error = %e, "Failed to parse known devices file");
+                        warn!(path = %cfg.seen_assets_file.display(), error = %e, "Failed to parse seen assets file");
                     }
                 }
             }
@@ -175,7 +175,7 @@ async fn main() {
         match aycallhome::try_load_devices_ordered(url).await {
             Ok(devices) => {
                 info!(url = %url, count = devices.len(), "Loaded devices from address map");
-                known_devices.extend(devices);
+                seen_assets.extend(devices);
             }
             Err(e) => {
                 warn!(url = %url, error = %e, "Failed to load devices from address map");
@@ -183,7 +183,7 @@ async fn main() {
         }
     }
 
-    let state = AppState::new(cfg.clone(), htpasswd, asset_cache, known_devices);
+    let state = AppState::new(cfg.clone(), htpasswd, asset_cache, seen_assets);
 
     // Background session cleanup
     let sessions = state.sessions.clone();

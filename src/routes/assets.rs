@@ -112,7 +112,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
     debug!(path = %inv_path.display(), "Loading all assets for list view");
 
     let records = read_all_records(inv_path);
-    let known_devices = state.known_devices.read().await;
+    let seen_assets = state.seen_assets.read().await;
 
     // Build serial → logical device name(s) mapping
     let serial_map = state
@@ -125,7 +125,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
     let rows: String = records
         .iter()
         .map(|r| {
-            let device = known_devices.get(&r.serial_number);
+            let device = seen_assets.get(&r.serial_number);
             let hostname = device
                 .and_then(|d| d.hostname.as_deref())
                 .unwrap_or("-");
@@ -197,8 +197,8 @@ pub async fn asset_detail(
             .into_response();
     };
 
-    let known_devices = state.known_devices.read().await;
-    let device = known_devices.get(&record.serial_number);
+    let seen_assets = state.seen_assets.read().await;
+    let device = seen_assets.get(&record.serial_number);
 
     // Build serial → logical device name(s) mapping
     let serial_map = state
@@ -401,13 +401,13 @@ mod tests {
     fn build_test_app_with_cache(
         inv_path: PathBuf,
         cache: AssetCache,
-        known_devices: IndexMap<String, Device>,
+        seen_assets: IndexMap<String, Device>,
     ) -> axum::Router {
         let state = AppState::new(
             make_test_config(),
             make_test_htpasswd(),
             Some((cache, inv_path)),
-            known_devices,
+            seen_assets,
         );
         routes().with_state(state)
     }
@@ -491,13 +491,13 @@ mod tests {
 
         let cache = AssetCache::new(inv_path.clone()).unwrap();
 
-        let mut known_devices = IndexMap::new();
-        known_devices.insert(
+        let mut seen_assets = IndexMap::new();
+        seen_assets.insert(
             "SN-DETAIL-001".to_string(),
             make_test_device("SN-DETAIL-001"),
         );
 
-        let app = build_test_app_with_cache(inv_path, cache, known_devices);
+        let app = build_test_app_with_cache(inv_path, cache, seen_assets);
 
         let req = Request::builder()
             .method(Method::GET)

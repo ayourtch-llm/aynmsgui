@@ -17,7 +17,7 @@ use crate::state::AppState;
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn list_software(State(state): State<AppState>) -> Response {
-    let devices = state.known_devices.read().await;
+    let devices = state.seen_assets.read().await;
 
     let rows: String = devices
         .values()
@@ -54,9 +54,9 @@ async fn start_upgrade(
 ) -> Response {
     // Verify device exists
     {
-        let devices = state.known_devices.read().await;
+        let devices = state.seen_assets.read().await;
         if !devices.contains_key(&serial) {
-            warn!(serial = %serial, "Upgrade requested for unknown device");
+            warn!(serial = %serial, "Upgrade requested for unknown serial");
             return StatusCode::NOT_FOUND.into_response();
         }
     }

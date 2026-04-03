@@ -92,13 +92,13 @@ pub struct AppConfig {
     #[arg(long, default_value = "data/changes", env = "AYNMSGUI_CHANGES_DIR")]
     pub changes_dir: Option<PathBuf>,
 
-    /// Path to known devices JSON file (aycallhome format)
+    /// Path to seen assets JSON file (aycallhome format)
     #[arg(
         long,
-        default_value = "data/known_devices.json",
-        env = "AYNMSGUI_KNOWN_DEVICES_FILE"
+        default_value = "data/seen_assets.json",
+        env = "AYNMSGUI_SEEN_ASSETS_FILE"
     )]
-    pub known_devices_file: PathBuf,
+    pub seen_assets_file: PathBuf,
 }
 
 #[cfg(test)]
@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(cfg.images_dir, Some(PathBuf::from("data/images")));
         assert_eq!(cfg.assignments_file, PathBuf::from("data/assignments.json"));
         assert_eq!(cfg.changes_dir, Some(PathBuf::from("data/changes")));
-        assert_eq!(cfg.known_devices_file, PathBuf::from("data/known_devices.json"));
+        assert_eq!(cfg.seen_assets_file, PathBuf::from("data/seen_assets.json"));
     }
 
     #[test]

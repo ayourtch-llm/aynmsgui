@@ -83,8 +83,8 @@ pub async fn apply_page(
         })
         .unwrap_or_else(|| "-".to_string());
 
-    // Look up device IP from known_devices
-    let devices = state.known_devices.read().await;
+    // Look up device IP from seen_assets
+    let devices = state.seen_assets.read().await;
     let device = devices.get(&name);
     let device_ip = device
         .and_then(|d| d.last_ipv4.as_deref().or(d.last_ipv6.as_deref()))
@@ -187,7 +187,7 @@ pub async fn apply_config(
 
     // Find device IP
     let device_ip = {
-        let devices = state.known_devices.read().await;
+        let devices = state.seen_assets.read().await;
         devices.get(&name)
             .and_then(|d| d.last_ipv4.clone().or(d.last_ipv6.clone()))
     };

@@ -141,11 +141,11 @@ pub async fn extract_sw_device(
         }
     };
 
-    // Run show version to register device in known_devices before extraction
+    // Run show version to register device in seen_assets before extraction
     if let Ok(sv_output) = conn.run_cmd("show version").await {
         if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(&sv_output) {
             if !sv_info.serial_number.is_empty() {
-                state.register_known_device(
+                state.register_seen_asset(
                     &sv_info.serial_number,
                     &ip,
                     if sv_info.hostname.is_empty() { None } else { Some(sv_info.hostname.as_str()) },

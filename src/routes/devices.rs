@@ -375,6 +375,27 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], ava
         )
     };
 
+    // Show upgrade section only when serial is assigned and a software image is set
+    let upgrade_section = if serial.is_some() && !current_image.is_empty() {
+        format!(
+            r#"<h2>Software Upgrade</h2>
+<form method="POST" action="/devices/{name}/upgrade">
+  <label for="upgrade_username">Username:</label><br>
+  <input type="text" id="upgrade_username" name="username" required><br><br>
+  <label for="upgrade_password">Password:</label><br>
+  <input type="password" id="upgrade_password" name="password" required><br><br>
+  <button type="submit" onclick="return confirm('Start software upgrade to {image}?')"
+    style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
+    Upgrade to {image}
+  </button>
+</form>"#,
+            name = d.name,
+            image = html_escape(current_image),
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -388,6 +409,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], ava
 <tr><th>Serial</th><td>{serial}{serial_action}</td></tr>
 <tr><th>Software Image</th><td>{software_image_field}</td></tr>
 </table>
+{upgrade_section}
 <h2>Port Assignments</h2>
 {ports_section}
 <h2>Raw Configuration</h2>
@@ -403,6 +425,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], ava
         serial = html_escape(serial_display),
         serial_action = serial_action,
         software_image_field = software_image_field,
+        upgrade_section = upgrade_section,
         ports_section = ports_section,
         config_json = html_escape(&d.config_json),
     )
@@ -1235,6 +1258,247 @@ pub async fn update_software_image(
         .into_response()
 }
 
+#[derive(Deserialize)]
+pub(crate) struct UpgradeForm {
+    username: String,
+    password: String,
+}
+
+/// SSE-compatible progress callback that sends events to a broadcast channel.
+struct SseProgressCallback {
+    tx: tokio::sync::broadcast::Sender<crate::sse::SseEvent>,
+}
+
+#[async_trait::async_trait]
+impl ayiosupdate_lib::upgrade::UpgradeProgressCallback for SseProgressCallback {
+    async fn on_progress(&self, progress: &ayiosupdate_lib::upgrade::UpgradeProgress) {
+        let data = format!("{:?}", progress);
+        let _ = self.tx.send(crate::sse::SseEvent {
+            event_type: "progress".to_string(),
+            data,
+        });
+    }
+}
+
+/// POST /devices/{name}/upgrade — start a software upgrade via SSE.
+pub async fn start_upgrade(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<UpgradeForm>,
+) -> Response {
+    if form.username.trim().is_empty() || form.password.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<html><body><p>Username and password are required.</p></body></html>"),
+        )
+            .into_response();
+    }
+
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    // Load device config to get serial and software-image
+    let configs = load_all_device_configs(base_dir);
+    let config = match configs.get(&name) {
+        Some(c) => c.clone(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html(format!(
+                    "<html><body><p>Device '{}' not found</p></body></html>",
+                    name
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let serial = match first_module_serial(&config) {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<html><body><p>No serial assigned to this device</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    let image_name = match config.get("software-image").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Html("<html><body><p>No software image configured for this device</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    // Resolve the image file path
+    let image_path = base_dir.join("software-images").join(&image_name);
+    if !image_path.exists() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(format!(
+                "<html><body><p>Software image file not found: {}</p></body></html>",
+                html_escape(&image_name),
+            )),
+        )
+            .into_response();
+    }
+
+    // Look up device IP from seen_assets
+    let device_ip = {
+        let assets = state.seen_assets.read().await;
+        assets
+            .get(&serial)
+            .and_then(|d| d.last_ipv4.clone().or(d.last_ipv6.clone()))
+    };
+
+    let ip = match device_ip {
+        Some(ip) => ip,
+        None => {
+            return Html(format!(
+                r#"<!DOCTYPE html>
+<html><body>
+<h1>No IP Address</h1>
+<p>Device <strong>{serial}</strong> has no known IP address.</p>
+<p><a href="/devices/{name}">Back</a></p>
+</body></html>"#,
+                serial = html_escape(&serial),
+                name = html_escape(&name),
+            ))
+            .into_response();
+        }
+    };
+
+    // Create SSE operation
+    let (op_id, tx) = state.operations.write().await.create_operation();
+    info!(device = %name, serial = %serial, op_id = %op_id, image = %image_name, "Starting software upgrade");
+
+    // Spawn the upgrade task
+    let ops = state.operations.clone();
+    let spawned_op_id = op_id.clone();
+    let username = form.username.trim().to_string();
+    let password = form.password.trim().to_string();
+    let ssh_target = crate::state::ssh_target(&ip, 22);
+
+    tokio::spawn(async move {
+        // Connect via SSH
+        let mut conn = match ayclic::CiscoIosConn::with_timeouts(
+            &ssh_target,
+            ayclic::ConnectionType::Ssh,
+            &username,
+            &password,
+            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(120),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(crate::sse::SseEvent {
+                    event_type: "error".to_string(),
+                    data: format!("SSH connection failed: {}", e),
+                });
+                let mut tracker = ops.write().await;
+                tracker.remove_operation(&spawned_op_id);
+                return;
+            }
+        };
+
+        let request = ayiosupdate_lib::upgrade::UpgradeRequest {
+            image_path,
+            expected_md5: None,
+            delete_existing: false,
+            cleanup_after: true,
+            timeout_secs: 600,
+        };
+
+        let progress_cb = SseProgressCallback { tx: tx.clone() };
+
+        match ayiosupdate_lib::upgrade::upgrade_classic_ios(
+            &mut conn,
+            &ssh_target,
+            &username,
+            &password,
+            request,
+            &progress_cb,
+        )
+        .await
+        {
+            Ok(result) => {
+                let _ = tx.send(crate::sse::SseEvent {
+                    event_type: "complete".to_string(),
+                    data: serde_json::json!({
+                        "status": "success",
+                        "old_version": result.old_version,
+                        "new_version": result.new_version,
+                    })
+                    .to_string(),
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(crate::sse::SseEvent {
+                    event_type: "error".to_string(),
+                    data: format!("Upgrade failed: {}", e),
+                });
+            }
+        }
+
+        let _ = conn.disconnect().await;
+        let mut tracker = ops.write().await;
+        tracker.remove_operation(&spawned_op_id);
+    });
+
+    // Return page with SSE progress link
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Upgrade Started</title></head>
+<body>
+<h1>Software Upgrade Started</h1>
+<p>Device: <strong>{name}</strong> (serial: {serial})</p>
+<p>Image: <strong>{image}</strong></p>
+<p>Operation ID: {op_id}</p>
+<div id="progress"></div>
+<script>
+const evtSource = new EventSource("/software/upgrade/{op_id}/progress");
+const div = document.getElementById("progress");
+evtSource.addEventListener("progress", function(e) {{
+    div.innerHTML += "<p>" + e.data + "</p>";
+}});
+evtSource.addEventListener("complete", function(e) {{
+    div.innerHTML += "<p style='color:green'><strong>Complete:</strong> " + e.data + "</p>";
+    evtSource.close();
+}});
+evtSource.addEventListener("error", function(e) {{
+    if (e.data) {{
+        div.innerHTML += "<p style='color:red'><strong>Error:</strong> " + e.data + "</p>";
+    }}
+    evtSource.close();
+}});
+</script>
+<p><a href="/devices/{name}">Back to Device</a></p>
+</body>
+</html>"#,
+        name = html_escape(&name),
+        serial = html_escape(&serial),
+        image = html_escape(&image_name),
+        op_id = html_escape(&op_id),
+    ))
+    .into_response()
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -1245,6 +1509,7 @@ pub fn routes() -> Router<AppState> {
         .route("/devices/{name}/unassign-serial", post(unassign_serial))
         .route("/devices/{name}/assign-serial", post(assign_serial))
         .route("/devices/{name}/software-image", post(update_software_image))
+        .route("/devices/{name}/upgrade", post(start_upgrade))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

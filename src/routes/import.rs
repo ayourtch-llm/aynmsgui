@@ -89,7 +89,7 @@ pub async fn import_device(
     };
 
     let ip = form.ip.trim().to_string();
-    let target = format!("{}:22", ip);
+    let target = crate::state::ssh_target(&ip, 22);
     info!(ip = %ip, "Starting device import via SSH");
 
     // 1. Connect to device via SSH

@@ -19,6 +19,17 @@ pub struct AppState {
     pub operations: Arc<RwLock<crate::sse::OperationTracker>>,
 }
 
+/// Format an IP address + port as an SSH target string.
+/// IPv6 addresses are wrapped in brackets: `[::1]:22`
+/// IPv4 addresses are used as-is: `10.0.0.1:22`
+pub fn ssh_target(ip: &str, port: u16) -> String {
+    if ip.contains(':') {
+        format!("[{}]:{}", ip, port)
+    } else {
+        format!("{}:{}", ip, port)
+    }
+}
+
 impl AppState {
     /// Register or update a known device by serial + IP address.
     /// Called after successful SSH connections during import/extract operations.
@@ -45,8 +56,15 @@ impl AppState {
                 first_seen: Some(chrono::Utc::now()),
             }
         });
-        device.last_ipv4 = Some(ip.to_string());
-        device.last_seen_ipv4 = Some(chrono::Utc::now());
+        if ip.contains(':') {
+            // IPv6
+            device.last_ipv6 = Some(ip.to_string());
+            device.last_seen_ipv6 = Some(chrono::Utc::now());
+        } else {
+            // IPv4
+            device.last_ipv4 = Some(ip.to_string());
+            device.last_seen_ipv4 = Some(chrono::Utc::now());
+        }
         if let Some(h) = hostname {
             device.hostname = Some(h.to_string());
         }

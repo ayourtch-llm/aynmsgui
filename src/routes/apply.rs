@@ -15,8 +15,6 @@ use crate::state::AppState;
 
 #[derive(Deserialize)]
 pub(crate) struct ApplyForm {
-    username: String,
-    password: String,
     safety_minutes: Option<u32>,
 }
 
@@ -70,8 +68,6 @@ pub async fn apply_page(
         )).into_response();
     }
 
-    let default_username = state.config.device_username.as_deref().unwrap_or("").to_string();
-
     // Look up logical device name for this serial
     let logical_device = state
         .config
@@ -107,10 +103,6 @@ pub async fn apply_page(
 <pre style="background:#f5f5f5; padding:1rem; border:1px solid #ccc; overflow-x:auto;">{delta}</pre>
 <h2>Confirm Apply</h2>
 <form method="POST" action="/apply/{name}">
-  <label for="username">Username:</label><br>
-  <input type="text" id="username" name="username" value="{default_username}" required><br><br>
-  <label for="password">Password:</label><br>
-  <input type="password" id="password" name="password" required><br><br>
   <label for="safety_minutes">Safety reload (minutes, 0 = none):</label><br>
   <input type="number" id="safety_minutes" name="safety_minutes" value="5" min="0" max="60"><br><br>
   <button type="submit" style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
@@ -125,7 +117,6 @@ pub async fn apply_page(
         hostname = html_escape(device_hostname),
         ip = html_escape(device_ip),
         delta = html_escape(&delta),
-        default_username = html_escape(&default_username),
     )).into_response()
 }
 
@@ -135,11 +126,7 @@ pub async fn apply_config(
     Path(name): Path<String>,
     Form(form): Form<ApplyForm>,
 ) -> Response {
-    if form.username.trim().is_empty() || form.password.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, Html(
-            "<html><body><p>Username and password are required.</p><a href=\"javascript:history.back()\">Back</a></body></html>".to_string(),
-        )).into_response();
-    }
+    let creds = state.get_device_credentials().await;
 
     let (target_path, current_path) = match (
         &state.config.target_configs_path,
@@ -230,8 +217,8 @@ pub async fn apply_config(
         &change,
         safety,
         aycfgapply::cli::ConnectionType::Ssh,
-        &form.username,
-        &form.password,
+        &creds.username,
+        &creds.password,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(120),
     ).await;
@@ -367,15 +354,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_apply_post_empty_creds() {
+    async fn test_apply_post_not_configured() {
         let app = build_test_app();
         let req = Request::builder()
             .method(Method::POST)
             .uri("/apply/FOC123")
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("username=&password=&safety_minutes=5"))
+            .body(Body::from("safety_minutes=5"))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // target path doesn't exist, so 503 or 404
+        assert!(
+            resp.status() == StatusCode::SERVICE_UNAVAILABLE || resp.status() == StatusCode::NOT_FOUND,
+        );
     }
 }

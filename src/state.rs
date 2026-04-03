@@ -1,10 +1,55 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 use crate::assignments::AssignmentMap;
 use crate::auth::htpasswd::HtpasswdStore;
 use crate::auth::session::SessionStore;
 use crate::config::AppConfig;
+
+/// Credentials used to connect to network devices via SSH.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceCredentials {
+    pub username: String,
+    pub password: String,
+}
+
+impl DeviceCredentials {
+    /// Load from a JSON file. Falls back to config CLI args, then empty defaults.
+    pub fn load(path: &Path, config: &AppConfig) -> Self {
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(creds) = serde_json::from_str::<DeviceCredentials>(&content) {
+                    info!(path = %path.display(), "Loaded device credentials from file");
+                    return creds;
+                }
+                warn!(path = %path.display(), "Failed to parse device credentials file");
+            }
+        }
+
+        // Fall back to CLI/env args
+        let creds = DeviceCredentials {
+            username: config.device_username.clone().unwrap_or_default(),
+            password: config.device_password.clone().unwrap_or_default(),
+        };
+
+        // Persist the initial credentials
+        if let Err(e) = creds.save(path) {
+            warn!(path = %path.display(), error = %e, "Failed to save initial device credentials");
+        }
+
+        creds
+    }
+
+    /// Save to a JSON file.
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        info!(path = %path.display(), "Saved device credentials");
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,6 +62,7 @@ pub struct AppState {
     pub seen_assets: Arc<RwLock<indexmap::IndexMap<String, aycallhome::Device>>>,
     pub assignments: Arc<RwLock<AssignmentMap>>,
     pub operations: Arc<RwLock<crate::sse::OperationTracker>>,
+    pub device_credentials: Arc<RwLock<DeviceCredentials>>,
 }
 
 /// Format an IP address + port as an SSH target string.
@@ -176,6 +222,7 @@ impl AppState {
                 AssignmentMap::new()
             });
         let sessions = SessionStore::with_persistence(&config.user_sessions_dir);
+        let device_credentials = DeviceCredentials::load(&config.device_credentials_file, &config);
         Self {
             config: Arc::new(config),
             htpasswd: Arc::new(htpasswd),
@@ -185,6 +232,20 @@ impl AppState {
             seen_assets: Arc::new(RwLock::new(seen_assets)),
             assignments: Arc::new(RwLock::new(assignments)),
             operations: Arc::new(RwLock::new(crate::sse::OperationTracker::new())),
+            device_credentials: Arc::new(RwLock::new(device_credentials)),
         }
+    }
+
+    /// Get a snapshot of the current device credentials.
+    pub async fn get_device_credentials(&self) -> DeviceCredentials {
+        self.device_credentials.read().await.clone()
+    }
+
+    /// Update device credentials and persist to disk.
+    pub async fn update_device_credentials(&self, creds: DeviceCredentials) {
+        if let Err(e) = creds.save(&self.config.device_credentials_file) {
+            tracing::warn!(error = %e, "Failed to save device credentials");
+        }
+        *self.device_credentials.write().await = creds;
     }
 }

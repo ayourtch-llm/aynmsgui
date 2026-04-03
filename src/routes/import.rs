@@ -15,22 +15,12 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub(crate) struct ImportForm {
     ip: String,
-    username: String,
-    password: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn import_page(State(state): State<AppState>) -> Response {
-    let default_username = state
-        .config
-        .device_username
-        .as_deref()
-        .unwrap_or("")
-        .to_string();
-
-    let html = format!(
-        r#"<!DOCTYPE html>
+pub async fn import_page(State(_state): State<AppState>) -> Response {
+    let html = r#"<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Import Device</title></head>
 <body>
@@ -39,16 +29,11 @@ pub async fn import_page(State(state): State<AppState>) -> Response {
 <form method="POST" action="/import">
   <label for="ip">IP Address:</label><br>
   <input type="text" id="ip" name="ip" required placeholder="192.168.1.1"><br><br>
-  <label for="username">Username:</label><br>
-  <input type="text" id="username" name="username" value="{default_username}" required><br><br>
-  <label for="password">Password:</label><br>
-  <input type="password" id="password" name="password" required><br><br>
   <button type="submit">Import Device</button>
 </form>
 <p><a href="/assets">Back to Assets</a></p>
 </body>
-</html>"#
-    );
+</html>"#;
 
     Html(html).into_response()
 }
@@ -58,14 +43,14 @@ pub async fn import_device(
     Form(form): Form<ImportForm>,
 ) -> Response {
     // Validate inputs
-    if form.ip.trim().is_empty() || form.username.trim().is_empty() || form.password.trim().is_empty() {
+    if form.ip.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Html(
                 r#"<!DOCTYPE html>
 <html><body>
 <h1>Import Error</h1>
-<p>IP address, username, and password are all required.</p>
+<p>IP address is required.</p>
 <a href="/import">Try again</a>
 </body></html>"#
                     .to_string(),
@@ -73,6 +58,8 @@ pub async fn import_device(
         )
             .into_response();
     }
+
+    let creds = state.get_device_credentials().await;
 
     let inv_path = match &state.asset_inventory_path {
         Some(p) => p.as_ref().clone(),
@@ -96,8 +83,8 @@ pub async fn import_device(
     let mut conn = match ayclic::CiscoIosConn::with_timeouts(
         &target,
         ayclic::ConnectionType::Ssh,
-        &form.username,
-        &form.password,
+        &creds.username,
+        &creds.password,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(30),
     )
@@ -344,8 +331,6 @@ mod tests {
         let body = std::str::from_utf8(&bytes).unwrap();
         assert!(body.contains("<form"), "expected form element");
         assert!(body.contains("name=\"ip\""), "expected ip field");
-        assert!(body.contains("name=\"username\""), "expected username field");
-        assert!(body.contains("name=\"password\""), "expected password field");
     }
 
     #[tokio::test]
@@ -355,7 +340,7 @@ mod tests {
             .method(Method::POST)
             .uri("/import")
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("ip=&username=admin&password=secret"))
+            .body(Body::from("ip="))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

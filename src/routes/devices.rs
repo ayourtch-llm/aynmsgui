@@ -380,10 +380,6 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], ava
         format!(
             r#"<h2>Software Upgrade</h2>
 <form method="POST" action="/devices/{name}/upgrade">
-  <label for="upgrade_username">Username:</label><br>
-  <input type="text" id="upgrade_username" name="username" required><br><br>
-  <label for="upgrade_password">Password:</label><br>
-  <input type="password" id="upgrade_password" name="password" required><br><br>
   <button type="submit" onclick="return confirm('Start software upgrade to {image}?')"
     style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
     Upgrade to {image}
@@ -1258,11 +1254,7 @@ pub async fn update_software_image(
         .into_response()
 }
 
-#[derive(Deserialize)]
-pub(crate) struct UpgradeForm {
-    username: String,
-    password: String,
-}
+// Upgrade form has no fields — credentials come from stored device credentials.
 
 /// SSE-compatible progress callback that sends events to a broadcast channel.
 struct SseProgressCallback {
@@ -1284,15 +1276,8 @@ impl ayiosupdate_lib::upgrade::UpgradeProgressCallback for SseProgressCallback {
 pub async fn start_upgrade(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Form(form): Form<UpgradeForm>,
 ) -> Response {
-    if form.username.trim().is_empty() || form.password.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html("<html><body><p>Username and password are required.</p></body></html>"),
-        )
-            .into_response();
-    }
+    let creds = state.get_device_credentials().await;
 
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
@@ -1388,8 +1373,8 @@ pub async fn start_upgrade(
     // Spawn the upgrade task
     let ops = state.operations.clone();
     let spawned_op_id = op_id.clone();
-    let username = form.username.trim().to_string();
-    let password = form.password.trim().to_string();
+    let username = creds.username.clone();
+    let password = creds.password.clone();
     let ssh_target = crate::state::ssh_target(&ip, 22);
 
     tokio::spawn(async move {

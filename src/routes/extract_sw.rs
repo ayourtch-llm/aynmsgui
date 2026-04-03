@@ -15,22 +15,12 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub(crate) struct ExtractSwForm {
     ip: String,
-    username: String,
-    password: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn extract_sw_page(State(state): State<AppState>) -> Response {
-    let default_username = state
-        .config
-        .device_username
-        .as_deref()
-        .unwrap_or("")
-        .to_string();
-
-    let html = format!(
-        r#"<!DOCTYPE html>
+pub async fn extract_sw_page(State(_state): State<AppState>) -> Response {
+    let html = r#"<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><title>Extract Software Image</title></head>
 <body>
@@ -40,16 +30,11 @@ to the local software-images directory via HTTP copy.</p>
 <form method="POST" action="/extract-sw">
   <label for="ip">IP Address:</label><br>
   <input type="text" id="ip" name="ip" required placeholder="192.168.1.1"><br><br>
-  <label for="username">Username:</label><br>
-  <input type="text" id="username" name="username" value="{default_username}" required><br><br>
-  <label for="password">Password:</label><br>
-  <input type="password" id="password" name="password" required><br><br>
   <button type="submit">Extract Software Image</button>
 </form>
 <p><a href="/software">Back to Software</a> | <a href="/">Dashboard</a></p>
 </body>
-</html>"#
-    );
+</html>"#;
 
     Html(html).into_response()
 }
@@ -59,17 +44,14 @@ pub async fn extract_sw_device(
     Form(form): Form<ExtractSwForm>,
 ) -> Response {
     // Validate inputs
-    if form.ip.trim().is_empty()
-        || form.username.trim().is_empty()
-        || form.password.trim().is_empty()
-    {
+    if form.ip.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Html(
                 r#"<!DOCTYPE html>
 <html><body>
 <h1>Error</h1>
-<p>IP address, username, and password are all required.</p>
+<p>IP address is required.</p>
 <a href="/extract-sw">Try again</a>
 </body></html>"#
                     .to_string(),
@@ -77,6 +59,8 @@ pub async fn extract_sw_device(
         )
             .into_response();
     }
+
+    let creds = state.get_device_credentials().await;
 
     // Determine output directory: cfggen_base_dir/software-images
     let sw_dir = match &state.config.cfggen_base_dir {
@@ -116,8 +100,8 @@ pub async fn extract_sw_device(
     let mut conn = match ayclic::CiscoIosConn::with_timeouts(
         &target,
         ayclic::ConnectionType::Ssh,
-        &form.username,
-        &form.password,
+        &creds.username,
+        &creds.password,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(120), // longer timeout for image transfer
     )
@@ -285,8 +269,6 @@ mod tests {
         let body = std::str::from_utf8(&bytes).unwrap();
         assert!(body.contains("<form"), "expected form");
         assert!(body.contains("name=\"ip\""), "expected ip field");
-        assert!(body.contains("name=\"username\""), "expected username field");
-        assert!(body.contains("name=\"password\""), "expected password field");
     }
 
     #[tokio::test]
@@ -296,7 +278,7 @@ mod tests {
             .method(Method::POST)
             .uri("/extract-sw")
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("ip=&username=admin&password=secret"))
+            .body(Body::from("ip="))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

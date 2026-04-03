@@ -68,13 +68,21 @@ pub struct AppConfig {
     #[arg(long, default_value = "main", env = "AYNMSGUI_CURRENT_BRANCH")]
     pub current_branch: String,
 
-    /// Username for device authentication
+    /// Username for device authentication (initial default, overridden by credentials file)
     #[arg(long, env = "AYNMSGUI_DEVICE_USERNAME")]
     pub device_username: Option<String>,
 
-    /// Password for device authentication
+    /// Password for device authentication (initial default, overridden by credentials file)
     #[arg(long, env = "AYNMSGUI_DEVICE_PASSWORD")]
     pub device_password: Option<String>,
+
+    /// Path to device credentials JSON file
+    #[arg(
+        long,
+        default_value = "data/device_credentials.json",
+        env = "AYNMSGUI_DEVICE_CREDENTIALS_FILE"
+    )]
+    pub device_credentials_file: PathBuf,
 
     /// Directory for images
     #[arg(long, default_value = "data/images", env = "AYNMSGUI_IMAGES_DIR")]

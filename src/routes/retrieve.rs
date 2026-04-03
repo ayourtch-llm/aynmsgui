@@ -1,12 +1,11 @@
 use axum::{
-    extract::{Form, State},
+    extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
     Router,
 };
 use indexmap::IndexMap;
-use serde::Deserialize;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -15,11 +14,7 @@ use crate::state::AppState;
 
 // ── Form struct ───────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub(crate) struct RetrieveForm {
-    username: String,
-    password: String,
-}
+// No form fields needed — credentials come from stored device credentials.
 
 // ── Git helper ────────────────────────────────────────────────────────────────
 
@@ -56,13 +51,6 @@ fn html_escape(s: &str) -> String {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn retrieve_page(State(state): State<AppState>) -> Response {
-    let default_username = state
-        .config
-        .device_username
-        .as_deref()
-        .unwrap_or("")
-        .to_string();
-
     let devices = state.seen_assets.read().await;
     let mut device_rows = String::new();
     for (serial, d) in devices.iter() {
@@ -88,10 +76,6 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
 <h1>Retrieve Current Configs</h1>
 <p>SSH into all seen assets and commit their running configs to the current-configs repo.</p>
 <form method="POST" action="/retrieve">
-  <label for="username">Username:</label><br>
-  <input type="text" id="username" name="username" value="{default_username}" required><br><br>
-  <label for="password">Password:</label><br>
-  <input type="password" id="password" name="password" required><br><br>
   <button type="submit">Retrieve Current Configs</button>
 </form>
 <h2>Seen Assets ({device_count})</h2>
@@ -102,7 +86,6 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
 <p><a href="/">Back to Dashboard</a></p>
 </body>
 </html>"#,
-        default_username = html_escape(&default_username),
         device_count = device_count,
         device_rows = device_rows,
     );
@@ -112,26 +95,10 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
 
 pub async fn retrieve_configs(
     State(state): State<AppState>,
-    Form(form): Form<RetrieveForm>,
 ) -> Response {
-    // 1. Validate inputs
-    if form.username.trim().is_empty() || form.password.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Html(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Retrieve Error</h1>
-<p>Username and password are required.</p>
-<a href="/retrieve">Try again</a>
-</body></html>"#
-                    .to_string(),
-            ),
-        )
-            .into_response();
-    }
+    let creds = state.get_device_credentials().await;
 
-    // 2. Check current_configs_path is configured and exists
+    // 1. Check current_configs_path is configured and exists
     let configs_path = match &state.config.current_configs_path {
         Some(p) => p.clone(),
         None => {
@@ -235,8 +202,8 @@ pub async fn retrieve_configs(
     // 6. Build InitConfig
     let init_config = aycfgapply::init::InitConfig {
         branch: branch.clone(),
-        username: form.username.trim().to_string(),
-        password: form.password.trim().to_string(),
+        username: creds.username.clone(),
+        password: creds.password.clone(),
         connection_type: aycfgapply::cli::ConnectionType::Ssh,
         connect_timeout: Duration::from_secs(30),
         cmd_timeout: Duration::from_secs(60),
@@ -384,34 +351,13 @@ mod tests {
             .unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(body.contains("<form"), "expected form element");
-        assert!(body.contains("name=\"username\""), "expected username field");
-        assert!(body.contains("name=\"password\""), "expected password field");
-        assert!(
-            body.contains("type=\"password\""),
-            "expected password input type"
-        );
         assert!(
             body.contains("Retrieve Current Configs"),
             "expected submit button text"
         );
     }
 
-    // ── Test 2: POST with empty username returns 400 ──────────────────────────
-
-    #[tokio::test]
-    async fn test_retrieve_empty_credentials_returns_error() {
-        let app = build_test_app();
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri("/retrieve")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("username=&password=secret"))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
-    // ── Test 3: POST when current_configs_path doesn't exist returns 503 ──────
+    // ── Test 2: POST when current_configs_path doesn't exist returns 503 ──────
 
     #[tokio::test]
     async fn test_retrieve_not_configured() {
@@ -431,8 +377,7 @@ mod tests {
         let req = Request::builder()
             .method(Method::POST)
             .uri("/retrieve")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("username=admin&password=secret"))
+            .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);

@@ -8,6 +8,7 @@ pub mod extract_sw;
 pub mod import;
 pub mod login;
 pub mod provision;
+pub mod retrieve;
 pub mod software;
 
 use axum::{middleware, Router};
@@ -33,6 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(import::routes())
         .merge(extract::routes())
         .merge(extract_sw::routes())
+        .merge(retrieve::routes())
         .layer(middleware::from_fn_with_state(sessions, auth_middleware));
 
     Router::new()

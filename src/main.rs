@@ -34,6 +34,40 @@ fn ensure_file(path: &Path, default_content: &str) {
     }
 }
 
+/// Ensure a directory is a git repo, initializing if needed.
+fn ensure_git_repo(path: &Path, branch: &str) {
+    ensure_dir(path);
+    if path.join(".git").exists() {
+        return;
+    }
+    info!(path = %path.display(), branch = %branch, "Initializing git repo");
+    let output = std::process::Command::new("git")
+        .args(["init", "-b", branch])
+        .current_dir(path)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            // Configure user for commits
+            let _ = std::process::Command::new("git")
+                .args(["config", "user.email", "aynmsgui@localhost"])
+                .current_dir(path)
+                .output();
+            let _ = std::process::Command::new("git")
+                .args(["config", "user.name", "aynmsgui"])
+                .current_dir(path)
+                .output();
+            // Create initial commit
+            let _ = std::process::Command::new("git")
+                .args(["commit", "--allow-empty", "-m", "init"])
+                .current_dir(path)
+                .output();
+            info!(path = %path.display(), "Git repo initialized");
+        }
+        Ok(o) => warn!(path = %path.display(), stderr = %String::from_utf8_lossy(&o.stderr), "git init failed"),
+        Err(e) => warn!(path = %path.display(), error = %e, "Failed to run git init"),
+    }
+}
+
 /// Create the data/ directory structure and seed any missing files.
 fn ensure_data_dirs(cfg: &AppConfig) {
     // htpasswd file — seed with a default admin:admin account (bcrypt)
@@ -53,12 +87,12 @@ fn ensure_data_dirs(cfg: &AppConfig) {
         ensure_dir(&dir.join("logical-devices"));
     }
 
-    // Config directories
+    // Config directories — init as git repos for aycfgapply
     if let Some(ref dir) = cfg.target_configs_path {
-        ensure_dir(dir);
+        ensure_git_repo(dir, &cfg.target_branch);
     }
     if let Some(ref dir) = cfg.current_configs_path {
-        ensure_dir(dir);
+        ensure_git_repo(dir, &cfg.current_branch);
     }
 
     // Changes directory

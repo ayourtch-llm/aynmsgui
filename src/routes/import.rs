@@ -260,6 +260,27 @@ pub async fn import_device(
                 if sv_info.platform.is_empty() { None } else { Some(sv_info.platform.as_str()) },
                 if sv_info.software_image.is_empty() { None } else { Some(sv_info.software_image.as_str()) },
             ).await;
+
+            // Save normalized running-config to current-configs/{serial}.cfg
+            if !show_running.is_empty() {
+                if let Some(ref current_dir) = state.config.current_configs_path {
+                    let _ = std::fs::create_dir_all(current_dir);
+                    let cfg_path = current_dir.join(format!("{}.cfg", sv_info.serial_number));
+                    match std::fs::write(&cfg_path, &show_running) {
+                        Ok(()) => {
+                            info!(serial = %sv_info.serial_number, path = %cfg_path.display(),
+                                "Saved current config during import");
+                            results_html.push_str(&format!(
+                                "<p>Current config saved to <code>{}</code></p>",
+                                html_escape(&cfg_path.display().to_string()),
+                            ));
+                        }
+                        Err(e) => {
+                            warn!(error = %e, path = %cfg_path.display(), "Failed to save current config");
+                        }
+                    }
+                }
+            }
         }
 
         // Determine logical device name: if hostname matches the naming convention,

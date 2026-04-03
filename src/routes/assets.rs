@@ -101,41 +101,48 @@ fn format_device_links(serial_map: &IndexMap<String, Vec<String>>, serial: &str)
     }
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+/// Format an IP address with a hover tooltip showing the last-seen timestamp.
+fn format_ip_with_timestamp(ip: Option<&str>, last_seen: Option<&str>) -> String {
+    match ip {
+        Some(addr) => {
+            let title = match last_seen {
+                Some(ts) => format!(" title=\"Last seen: {}\"", ts),
+                None => String::new(),
+            };
+            format!("<span{}>{}</span>", title, addr)
+        }
+        None => "-".to_string(),
+    }
+}
 
-pub async fn list_assets(State(state): State<AppState>) -> Response {
-    let (Some(_cache), Some(inv_path)) = (&state.asset_cache, &state.asset_inventory_path) else {
-        let html = "<html><body><p>Asset inventory not configured</p></body></html>";
-        return Html(html).into_response();
-    };
-
-    debug!(path = %inv_path.display(), "Loading all assets for list view");
-
-    let records = read_all_records(inv_path);
-    let seen_assets = state.seen_assets.read().await;
-
-    // Build serial → logical device name(s) mapping
-    let serial_map = state
-        .config
-        .cfggen_base_dir
-        .as_ref()
-        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
-        .unwrap_or_default();
-
-    let rows: String = records
+/// Render the asset list table rows from filtered records.
+fn render_asset_rows(
+    records: &[ayciam::AssetRecord],
+    seen_assets: &indexmap::IndexMap<String, aycallhome::Device>,
+    serial_map: &IndexMap<String, Vec<String>>,
+) -> String {
+    records
         .iter()
         .map(|r| {
             let device = seen_assets.get(&r.serial_number);
             let hostname = device
                 .and_then(|d| d.hostname.as_deref())
                 .unwrap_or("-");
-            let last_ipv4 = device
-                .and_then(|d| d.last_ipv4.as_deref())
-                .unwrap_or("-");
-            let last_ipv6 = device
-                .and_then(|d| d.last_ipv6.as_deref())
-                .unwrap_or("-");
-            let logical_devices = format_device_links(&serial_map, &r.serial_number);
+            let last_ipv4 = format_ip_with_timestamp(
+                device.and_then(|d| d.last_ipv4.as_deref()),
+                device
+                    .and_then(|d| d.last_seen_ipv4)
+                    .map(|t| t.to_rfc3339())
+                    .as_deref(),
+            );
+            let last_ipv6 = format_ip_with_timestamp(
+                device.and_then(|d| d.last_ipv6.as_deref()),
+                device
+                    .and_then(|d| d.last_seen_ipv6)
+                    .map(|t| t.to_rfc3339())
+                    .as_deref(),
+            );
+            let logical_devices = format_device_links(serial_map, &r.serial_number);
             format!(
                 "<tr><td><a href=\"/assets/{serial}\">{serial}</a></td>\
                  <td>{asset_tag}</td><td>{vendor}</td><td>{sku}</td>\
@@ -152,22 +159,80 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
                 logical_devices = logical_devices,
             )
         })
-        .collect();
+        .collect()
+}
 
-    let html = format!(
+/// Render the full asset list page HTML.
+fn render_asset_list_page(title: &str, heading: &str, rows: &str) -> String {
+    format!(
         r#"<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8"><title>Assets</title></head>
+<head><meta charset="UTF-8"><title>{title}</title></head>
 <body>
-<h1>Asset Inventory</h1>
+<h1>{heading}</h1>
 <table>
 <tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr>
 {rows}
 </table>
 </body>
-</html>"#
-    );
+</html>"#,
+        title = title,
+        heading = heading,
+        rows = rows,
+    )
+}
 
+// ── Handlers ─────────────────────────────────────────────────────────────────
+
+pub async fn list_assets(State(state): State<AppState>) -> Response {
+    let (Some(_cache), Some(inv_path)) = (&state.asset_cache, &state.asset_inventory_path) else {
+        let html = "<html><body><p>Asset inventory not configured</p></body></html>";
+        return Html(html).into_response();
+    };
+
+    debug!(path = %inv_path.display(), "Loading all assets for list view");
+
+    let records = read_all_records(inv_path);
+    let seen_assets = state.seen_assets.read().await;
+
+    let serial_map = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .unwrap_or_default();
+
+    let rows = render_asset_rows(&records, &seen_assets, &serial_map);
+    let html = render_asset_list_page("Assets", "Asset Inventory", &rows);
+    Html(html).into_response()
+}
+
+pub async fn list_seen_assets(State(state): State<AppState>) -> Response {
+    let (Some(_cache), Some(inv_path)) = (&state.asset_cache, &state.asset_inventory_path) else {
+        let html = "<html><body><p>Asset inventory not configured</p></body></html>";
+        return Html(html).into_response();
+    };
+
+    debug!(path = %inv_path.display(), "Loading seen assets for list view");
+
+    let records = read_all_records(inv_path);
+    let seen_assets = state.seen_assets.read().await;
+
+    // Filter to only assets that have been seen
+    let seen_records: Vec<ayciam::AssetRecord> = records
+        .into_iter()
+        .filter(|r| seen_assets.contains_key(&r.serial_number))
+        .collect();
+
+    let serial_map = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .unwrap_or_default();
+
+    let rows = render_asset_rows(&seen_records, &seen_assets, &serial_map);
+    let html = render_asset_list_page("Seen Assets", "Seen Assets", &rows);
     Html(html).into_response()
 }
 
@@ -298,8 +363,8 @@ fn render_asset_detail(d: &AssetDetailView) -> String {
         registered_at = d.registered_at,
         hostname = d.hostname.as_deref().unwrap_or("-"),
         model = d.model.as_deref().unwrap_or("-"),
-        last_ipv4 = d.last_ipv4.as_deref().unwrap_or("-"),
-        last_ipv6 = d.last_ipv6.as_deref().unwrap_or("-"),
+        last_ipv4 = format_ip_with_timestamp(d.last_ipv4.as_deref(), d.last_seen_ipv4.as_deref()),
+        last_ipv6 = format_ip_with_timestamp(d.last_ipv6.as_deref(), d.last_seen_ipv6.as_deref()),
         logical_devices = d.logical_devices_html,
         modules = modules_html,
     )
@@ -311,6 +376,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/assets", get(list_assets))
         .route("/assets/{serial}", get(asset_detail))
+        .route("/seen", get(list_seen_assets))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

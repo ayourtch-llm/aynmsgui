@@ -96,7 +96,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
     <div class="count">{asset_count}</div>
     <div class="label">Assets</div>
   </a>
-  <a class="card" href="/devices">
+  <a class="card" href="/seen">
     <div class="count">{seen_count}</div>
     <div class="label">Seen Assets</div>
   </a>

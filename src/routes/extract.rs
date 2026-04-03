@@ -133,7 +133,13 @@ pub async fn extract_device(
     for cmd in &commands {
         match conn.run_cmd(cmd).await {
             Ok(output) => {
-                collected.push_str(&format!("!!! aycfgextract: {} !!!\n{}\n", cmd, output));
+                // Normalize running-config to strip noise lines
+                let clean_output = if *cmd == "show running-config" {
+                    aycfgapply::normalize::normalize_config(&output)
+                } else {
+                    output.clone()
+                };
+                collected.push_str(&format!("!!! aycfgextract: {} !!!\n{}\n", cmd, clean_output));
                 if *cmd == "show version" {
                     show_version_output = Some(output);
                 }

@@ -147,7 +147,9 @@ pub async fn import_device(
     // Also collect commands needed for config extraction pipeline
     let show_ip_brief = conn.run_cmd("show ip interface brief").await.unwrap_or_default();
     let show_intf_status = conn.run_cmd("show interfaces status").await.unwrap_or_default();
-    let show_running = conn.run_cmd("show running-config").await.unwrap_or_default();
+    let show_running_raw = conn.run_cmd("show running-config").await.unwrap_or_default();
+    // Strip noise lines (Load for five secs, Time source, Building configuration, etc.)
+    let show_running = aycfgapply::normalize::normalize_config(&show_running_raw);
 
     let _ = conn.disconnect().await;
 

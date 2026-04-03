@@ -399,7 +399,10 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], ava
 <body>
 <h1>Logical Device: {name}</h1>
 <table>
-<tr><th>Name</th><td>{name}</td></tr>
+<tr><th>Name</th><td>{name} <form method="POST" action="/devices/{name}/rename" style="display:inline">
+<input type="text" name="new_name" size="20" placeholder="New name">
+<button type="submit" onclick="return confirm('Rename device to the new name?')">Rename</button>
+</form></td></tr>
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>Role</th><td>{role}</td></tr>
 <tr><th>Serial</th><td>{serial}{serial_action}</td></tr>
@@ -1484,6 +1487,107 @@ evtSource.addEventListener("error", function(e) {{
     .into_response()
 }
 
+#[derive(Deserialize)]
+pub(crate) struct RenameForm {
+    new_name: String,
+}
+
+/// POST /devices/{name}/rename — rename a logical device.
+pub async fn rename_device(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<RenameForm>,
+) -> Response {
+    let new_name = form.new_name.trim().to_string();
+    if new_name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<html><body><p>New name cannot be empty</p></body></html>"),
+        )
+            .into_response();
+    }
+
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    let ld_dir = base_dir.join("logical-devices");
+
+    // Find the source (directory or flat JSON)
+    let src_dir = ld_dir.join(&name);
+    let src_json = ld_dir.join(format!("{}.json", name));
+    let dst_dir = ld_dir.join(&new_name);
+    let dst_json = ld_dir.join(format!("{}.json", new_name));
+
+    if dst_dir.exists() || dst_json.exists() {
+        return (
+            StatusCode::CONFLICT,
+            Html(format!(
+                "<html><body><p>A device named '{}' already exists</p></body></html>",
+                new_name
+            )),
+        )
+            .into_response();
+    }
+
+    if src_dir.exists() {
+        if let Err(e) = std::fs::rename(&src_dir, &dst_dir) {
+            warn!(error = %e, from = %name, to = %new_name, "Failed to rename device directory");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to rename: {}</p></body></html>",
+                    e
+                )),
+            )
+                .into_response();
+        }
+    } else if src_json.exists() {
+        if let Err(e) = std::fs::rename(&src_json, &dst_json) {
+            warn!(error = %e, from = %name, to = %new_name, "Failed to rename device JSON");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to rename: {}</p></body></html>",
+                    e
+                )),
+            )
+                .into_response();
+        }
+    } else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(format!(
+                "<html><body><p>Device '{}' not found</p></body></html>",
+                name
+            )),
+        )
+            .into_response();
+    }
+
+    info!(from = %name, to = %new_name, "Renamed logical device");
+
+    // Recompile the config under the new name
+    let compile_result = compile_device_config(&new_name, base_dir, &state.config);
+    match &compile_result {
+        Ok(()) => info!(name = %new_name, "Config compiled after rename"),
+        Err(e) => warn!(name = %new_name, error = %e, "Config compilation failed after rename"),
+    }
+
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, format!("/devices/{}", new_name))],
+    )
+        .into_response()
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -1495,6 +1599,7 @@ pub fn routes() -> Router<AppState> {
         .route("/devices/{name}/assign-serial", post(assign_serial))
         .route("/devices/{name}/software-image", post(update_software_image))
         .route("/devices/{name}/upgrade", post(start_upgrade))
+        .route("/devices/{name}/rename", post(rename_device))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

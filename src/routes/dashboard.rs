@@ -65,32 +65,8 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
         "Dashboard counts"
     );
 
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>Dashboard</title>
-<style>
-  body {{ font-family: sans-serif; margin: 2rem; }}
-  h1 {{ margin-bottom: 1.5rem; }}
-  .cards {{ display: flex; flex-wrap: wrap; gap: 1rem; }}
-  .card {{
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    padding: 1rem 1.5rem;
-    min-width: 160px;
-    text-align: center;
-    text-decoration: none;
-    color: inherit;
-  }}
-  .card:hover {{ background: #f5f5f5; }}
-  .card .count {{ font-size: 2rem; font-weight: bold; margin: 0.5rem 0; }}
-  .card .label {{ font-size: 0.9rem; color: #555; }}
-</style>
-</head>
-<body>
-<h1>Dashboard</h1>
+    let content = format!(
+        r#"<h1>Dashboard</h1>
 <div class="cards">
   <a class="card" href="/assets">
     <div class="count">{asset_count}</div>
@@ -130,9 +106,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
   <a class="card" href="/settings/credentials">
     <div class="label">Connection Settings</div>
   </a>
-</div>
-</body>
-</html>"#,
+</div>"#,
         asset_count = asset_count,
         seen_count = seen_count,
         device_count = device_count,
@@ -140,6 +114,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
         config_count = config_count,
     );
 
+    let html = crate::routes::page_html("Dashboard", "", &content);
     Html(html)
 }
 

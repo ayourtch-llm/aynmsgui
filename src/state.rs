@@ -106,10 +106,11 @@ impl AppState {
                 tracing::warn!(error = %e, "Failed to load assignments, starting empty");
                 AssignmentMap::new()
             });
+        let sessions = SessionStore::with_persistence(&config.user_sessions_dir);
         Self {
             config: Arc::new(config),
             htpasswd: Arc::new(htpasswd),
-            sessions: Arc::new(RwLock::new(SessionStore::new())),
+            sessions: Arc::new(RwLock::new(sessions)),
             asset_cache: cache_opt,
             asset_inventory_path: path_opt,
             known_devices: Arc::new(RwLock::new(known_devices)),

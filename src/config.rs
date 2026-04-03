@@ -20,6 +20,10 @@ pub struct AppConfig {
     #[arg(long, default_value_t = 86400, env = "AYNMSGUI_SESSION_TTL_SECS")]
     pub session_ttl_secs: u64,
 
+    /// Directory for persistent user sessions
+    #[arg(long, default_value = "data/user-sessions", env = "AYNMSGUI_USER_SESSIONS_DIR")]
+    pub user_sessions_dir: PathBuf,
+
     /// Path to JSONL inventory file for AssetCache
     #[arg(long, default_value = "data/inventory.jsonl", env = "AYNMSGUI_INVENTORY_PATH")]
     pub inventory_path: Option<PathBuf>,
@@ -115,6 +119,7 @@ mod tests {
         assert_eq!(cfg.port, 8080);
         assert_eq!(cfg.htpasswd_file, PathBuf::from("data/htpasswd"));
         assert_eq!(cfg.session_ttl_secs, 86400);
+        assert_eq!(cfg.user_sessions_dir, PathBuf::from("data/user-sessions"));
         assert_eq!(cfg.inventory_path, Some(PathBuf::from("data/inventory.jsonl")));
         assert!(cfg.address_map_urls.is_empty());
         assert_eq!(cfg.address_map_refresh_secs, 60);

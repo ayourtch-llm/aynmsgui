@@ -152,7 +152,7 @@ pub async fn extract_sw_device(
         let request = ayiosupdate_lib::extract::ExtractionRequest {
             kind: ayiosupdate_lib::extract::ExtractionKind::Image,
             output_dir: sw_dir,
-            timeout_secs: 600,
+            timeout_secs: 1200, // 20 minutes for large images
         };
 
         let result = ayiosupdate_lib::extract::extract_from_device(

@@ -1368,7 +1368,7 @@ pub async fn start_upgrade(
     };
 
     // Create SSE operation
-    let (op_id, tx) = state.operations.write().await.create_operation();
+    let (op_id, tx) = state.operations.write().await.create_operation_with_info("upgrade", &name);
     info!(device = %name, serial = %serial, op_id = %op_id, image = %image_name, "Starting software upgrade");
 
     // Spawn the upgrade task
@@ -1394,12 +1394,9 @@ pub async fn start_upgrade(
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = tx.send(crate::sse::SseEvent {
-                    event_type: "error".to_string(),
-                    data: format!("SSH connection failed: {}", e),
-                });
-                let mut tracker = ops.write().await;
-                tracker.remove_operation(&spawned_op_id);
+                let msg = format!("SSH connection failed: {}", e);
+                let _ = tx.send(crate::sse::SseEvent { event_type: "error".to_string(), data: msg.clone() });
+                ops.write().await.fail_operation(&spawned_op_id, &msg);
                 return;
             }
         };
@@ -1425,6 +1422,7 @@ pub async fn start_upgrade(
         .await
         {
             Ok(result) => {
+                let msg = format!("{} -> {}", result.old_version, result.new_version);
                 let _ = tx.send(crate::sse::SseEvent {
                     event_type: "complete".to_string(),
                     data: serde_json::json!({
@@ -1434,57 +1432,25 @@ pub async fn start_upgrade(
                     })
                     .to_string(),
                 });
+                ops.write().await.complete_operation(&spawned_op_id, &msg);
             }
             Err(e) => {
-                let _ = tx.send(crate::sse::SseEvent {
-                    event_type: "error".to_string(),
-                    data: format!("Upgrade failed: {}", e),
-                });
+                let msg = format!("Upgrade failed: {}", e);
+                let _ = tx.send(crate::sse::SseEvent { event_type: "error".to_string(), data: msg.clone() });
+                ops.write().await.fail_operation(&spawned_op_id, &msg);
             }
         }
 
         let _ = conn.disconnect().await;
-        let mut tracker = ops.write().await;
-        tracker.remove_operation(&spawned_op_id);
     });
 
-    // Return page with SSE progress link
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Upgrade Started</title></head>
-<body>
-<h1>Software Upgrade Started</h1>
-<p>Device: <strong>{name}</strong> (serial: {serial})</p>
-<p>Image: <strong>{image}</strong></p>
-<p>Operation ID: {op_id}</p>
-<div id="progress"></div>
-<script>
-const evtSource = new EventSource("/software/upgrade/{op_id}/progress");
-const div = document.getElementById("progress");
-evtSource.addEventListener("progress", function(e) {{
-    div.innerHTML += "<p>" + e.data + "</p>";
-}});
-evtSource.addEventListener("complete", function(e) {{
-    div.innerHTML += "<p style='color:green'><strong>Complete:</strong> " + e.data + "</p>";
-    evtSource.close();
-}});
-evtSource.addEventListener("error", function(e) {{
-    if (e.data) {{
-        div.innerHTML += "<p style='color:red'><strong>Error:</strong> " + e.data + "</p>";
-    }}
-    evtSource.close();
-}});
-</script>
-<p><a href="/devices/{name}">Back to Device</a></p>
-</body>
-</html>"#,
-        name = html_escape(&name),
-        serial = html_escape(&serial),
-        image = html_escape(&image_name),
-        op_id = html_escape(&op_id),
-    ))
-    .into_response()
+    // Return page with SSE progress
+    let details = format!(
+        "<p>Device: <strong>{}</strong> (serial: {})<br>Image: <strong>{}</strong></p>",
+        html_escape(&name), html_escape(&serial), html_escape(&image_name),
+    );
+    Html(crate::sse::sse_progress_page("Software Upgrade", &details, &op_id))
+        .into_response()
 }
 
 #[derive(Deserialize)]

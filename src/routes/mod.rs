@@ -8,6 +8,7 @@ pub mod extract;
 pub mod extract_sw;
 pub mod import;
 pub mod login;
+pub mod operations;
 pub mod provision;
 pub mod retrieve;
 pub mod settings;
@@ -115,6 +116,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(extract_sw::routes())
         .merge(apply::routes())
         .merge(retrieve::routes())
+        .merge(operations::routes())
         .merge(settings::routes())
         .layer(middleware::from_fn_with_state(sessions, auth_middleware));
 

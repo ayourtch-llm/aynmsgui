@@ -94,7 +94,7 @@ pub async fn extract_sw_device(
     info!(ip = %ip, "Starting software image extraction via SSH");
 
     // Create SSE operation
-    let (op_id, tx) = state.operations.write().await.create_operation();
+    let (op_id, tx) = state.operations.write().await.create_operation_with_info("extract-sw", &ip);
     info!(ip = %ip, op_id = %op_id, "Extraction operation created");
 
     // Spawn the extraction in a background task
@@ -104,14 +104,14 @@ pub async fn extract_sw_device(
     let extract_ip = ip.clone();
 
     tokio::spawn(async move {
-        let send = |event_type: &str, data: &str| {
+        let send_progress = |data: &str| {
             let _ = tx.send(crate::sse::SseEvent {
-                event_type: event_type.to_string(),
+                event_type: "progress".to_string(),
                 data: data.to_string(),
             });
         };
 
-        send("progress", &format!("Connecting to {}...", extract_ip));
+        send_progress(&format!("Connecting to {}...", extract_ip));
 
         // Connect to device
         let mut conn = match extract_state.connect_to_device(
@@ -123,13 +123,14 @@ pub async fn extract_sw_device(
         {
             Ok(c) => c,
             Err(e) => {
-                send("error", &format!("SSH connection failed: {}", e));
-                ops.write().await.remove_operation(&spawned_op_id);
+                let msg = format!("SSH connection failed: {}", e);
+                let _ = tx.send(crate::sse::SseEvent { event_type: "error".to_string(), data: msg.clone() });
+                ops.write().await.fail_operation(&spawned_op_id, &msg);
                 return;
             }
         };
 
-        send("progress", "Connected. Running show version...");
+        send_progress("Connected. Running show version...");
 
         // Register device in seen_assets
         if let Ok(sv_output) = conn.run_cmd("show version").await {
@@ -142,12 +143,12 @@ pub async fn extract_sw_device(
                         if sv_info.platform.is_empty() { None } else { Some(sv_info.platform.as_str()) },
                         if sv_info.software_image.is_empty() { None } else { Some(sv_info.software_image.as_str()) },
                     ).await;
-                    send("progress", &format!("Device: {} ({})", sv_info.hostname, sv_info.serial_number));
+                    send_progress(&format!("Device: {} ({})", sv_info.hostname, sv_info.serial_number));
                 }
             }
         }
 
-        send("progress", "Starting software image extraction (this may take several minutes)...");
+        send_progress("Starting software image extraction (this may take several minutes)...");
 
         let request = ayiosupdate_lib::extract::ExtractionRequest {
             kind: ayiosupdate_lib::extract::ExtractionKind::Image,
@@ -175,56 +176,23 @@ pub async fn extract_sw_device(
                     md5 = ?extraction.md5,
                     "Software image extracted successfully"
                 );
-                send("complete", &format!(
-                    "Extracted {} ({:.1} MB, MD5: {})",
-                    extraction.filename, size_mb, md5_display
-                ));
+                let msg = format!("Extracted {} ({:.1} MB, MD5: {})", extraction.filename, size_mb, md5_display);
+                let _ = tx.send(crate::sse::SseEvent { event_type: "complete".to_string(), data: msg.clone() });
+                ops.write().await.complete_operation(&spawned_op_id, &msg);
             }
             Err(e) => {
                 warn!(ip = %extract_ip, error = %e, "Software image extraction failed");
-                send("error", &format!("Extraction failed: {}", e));
+                let msg = format!("Extraction failed: {}", e);
+                let _ = tx.send(crate::sse::SseEvent { event_type: "error".to_string(), data: msg.clone() });
+                ops.write().await.fail_operation(&spawned_op_id, &msg);
             }
         }
-
-        ops.write().await.remove_operation(&spawned_op_id);
     });
 
     // Return page with SSE progress
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Extracting Software Image</title></head>
-<body>
-<h1>Extracting Software Image</h1>
-<p>Device: <strong>{ip}</strong></p>
-<p>Operation ID: {op_id}</p>
-<div id="progress"></div>
-<script>
-const evtSource = new EventSource("/software/upgrade/{op_id}/progress");
-const div = document.getElementById("progress");
-evtSource.addEventListener("progress", function(e) {{
-    div.innerHTML += "<p>" + e.data + "</p>";
-}});
-evtSource.addEventListener("complete", function(e) {{
-    div.innerHTML += "<p style='color:green'><strong>" + e.data + "</strong></p>";
-    div.innerHTML += "<p><a href='/software'>Back to Software</a> | <a href='/extract-sw'>Extract Another</a></p>";
-    evtSource.close();
-}});
-evtSource.addEventListener("error", function(e) {{
-    if (e.data) {{
-        div.innerHTML += "<p style='color:red'><strong>Error:</strong> " + e.data + "</p>";
-    }}
-    div.innerHTML += "<p><a href='/extract-sw'>Try again</a></p>";
-    evtSource.close();
-}});
-</script>
-<p><a href="/extract-sw">Back</a> | <a href="/">Dashboard</a></p>
-</body>
-</html>"#,
-        ip = html_escape(&ip),
-        op_id = html_escape(&op_id),
-    ))
-    .into_response()
+    let details = format!("<p>Device: <strong>{}</strong></p>", html_escape(&ip));
+    Html(crate::sse::sse_progress_page("Extracting Software Image", &details, &op_id))
+        .into_response()
 }
 
 fn html_escape(s: &str) -> String {

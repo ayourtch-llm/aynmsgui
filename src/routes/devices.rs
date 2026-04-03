@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 use indexmap::IndexMap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
@@ -26,6 +26,13 @@ pub struct DeviceDetailView {
     pub name: String,
     pub config_json: String,
     pub raw_config: serde_json::Value,
+}
+
+/// A candidate asset that could be assigned to a logical device (same SKU, recently called home).
+pub struct AssignCandidate {
+    pub serial: String,
+    pub hostname: String,
+    pub last_seen_label: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -199,17 +206,24 @@ pub async fn device_detail(
     // Load available services from cfggen services directory
     let available_services = load_available_services(base_dir);
 
+    // Build assign candidates if device has no serial
+    let candidates = if first_module_serial(&raw_config).is_none() {
+        build_assign_candidates(&raw_config, &state).await
+    } else {
+        vec![]
+    };
+
     let detail = DeviceDetailView {
         name: name.clone(),
         config_json: config_json.clone(),
         raw_config,
     };
 
-    let html = render_device_detail(&detail, &available_services);
+    let html = render_device_detail(&detail, &available_services, &candidates);
     Html(html).into_response()
 }
 
-fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> String {
+fn render_device_detail(d: &DeviceDetailView, available_services: &[String], candidates: &[AssignCandidate]) -> String {
     let hostname = d
         .raw_config
         .get("hostname")
@@ -229,12 +243,35 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
         None => "-",
     };
 
-    let unassign_button = if serial.is_some() {
+    let serial_action = if serial.is_some() {
         format!(
             r#" <form method="POST" action="/devices/{name}/unassign-serial" style="display:inline">
 <button type="submit" onclick="return confirm('Remove serial from this device?')">Unassign Serial</button>
 </form>"#,
             name = d.name,
+        )
+    } else if !candidates.is_empty() {
+        let options: String = candidates
+            .iter()
+            .map(|c| {
+                format!(
+                    "<option value=\"{serial}\">{serial} — {hostname} — {last_seen}</option>",
+                    serial = html_escape(&c.serial),
+                    hostname = html_escape(&c.hostname),
+                    last_seen = html_escape(&c.last_seen_label),
+                )
+            })
+            .collect();
+        format!(
+            r#" <form method="POST" action="/devices/{name}/assign-serial" style="display:inline">
+<select name="serial" id="assign-serial-select" onchange="document.getElementById('assign-serial-btn').disabled = (this.value === '')">
+<option value="" selected>-</option>
+{options}
+</select>
+<button type="submit" id="assign-serial-btn" disabled onclick="return confirm('Assign this serial to the device?')">Assign Serial</button>
+</form>"#,
+            name = d.name,
+            options = options,
         )
     } else {
         String::new()
@@ -307,7 +344,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
 <tr><th>Name</th><td>{name}</td></tr>
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>Role</th><td>{role}</td></tr>
-<tr><th>Serial</th><td>{serial}{unassign_button}</td></tr>
+<tr><th>Serial</th><td>{serial}{serial_action}</td></tr>
 </table>
 <h2>Port Assignments</h2>
 {ports_section}
@@ -322,7 +359,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
         hostname = hostname,
         role = role,
         serial = html_escape(serial_display),
-        unassign_button = unassign_button,
+        serial_action = serial_action,
         ports_section = ports_section,
         config_json = html_escape(&d.config_json),
     )
@@ -496,6 +533,101 @@ pub fn serial_to_device_names(
     }
 
     map
+}
+
+/// Extract the SKU from the first module in a device config JSON.
+fn first_module_sku(config: &serde_json::Value) -> Option<String> {
+    config
+        .get("modules")
+        .and_then(|m| m.as_array())
+        .and_then(|modules| modules.first())
+        .and_then(|module| module.get("SKU"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Build a list of candidate assets that match the device's SKU and have
+/// recently called home. Sorted by last-seen time descending (IPv6 first).
+async fn build_assign_candidates(
+    raw_config: &serde_json::Value,
+    state: &AppState,
+) -> Vec<AssignCandidate> {
+    let sku = match first_module_sku(raw_config) {
+        Some(s) => s,
+        None => return vec![],
+    };
+
+    // Read all asset records to find those matching the SKU
+    let inv_path = match &state.asset_inventory_path {
+        Some(p) => p.as_ref().clone(),
+        None => return vec![],
+    };
+    let all_records: Vec<ayciam::AssetRecord> = match std::fs::read_to_string(&inv_path) {
+        Ok(content) => content
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if line.is_empty() {
+                    return None;
+                }
+                serde_json::from_str(line).ok()
+            })
+            .collect(),
+        Err(_) => return vec![],
+    };
+
+    let matching_serials: Vec<String> = all_records
+        .iter()
+        .filter(|r| r.sku == sku)
+        .map(|r| r.serial_number.clone())
+        .collect();
+
+    if matching_serials.is_empty() {
+        return vec![];
+    }
+
+    // Collect serials already used by other device configs
+    let used_serials = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .unwrap_or_default();
+
+    let known_devices = state.known_devices.read().await;
+
+    let mut sorted: Vec<_> = matching_serials
+        .into_iter()
+        .filter(|serial| !used_serials.contains_key(serial))
+        .filter_map(|serial| {
+            let device = known_devices.get(&serial)?;
+            // Must have called home at least once
+            let last_seen = match (device.last_seen_ipv6, device.last_seen_ipv4) {
+                (Some(v6), _) => v6,
+                (_, Some(v4)) => v4,
+                _ => return None,
+            };
+            let hostname = device.hostname.as_deref().unwrap_or("-").to_string();
+            let ip = device
+                .last_ipv6
+                .as_deref()
+                .or(device.last_ipv4.as_deref())
+                .unwrap_or("-");
+            Some((serial, hostname, ip.to_string(), last_seen, device.last_seen_ipv6.is_some()))
+        })
+        .collect();
+
+    // Sort: IPv6-reachable first, then by last-seen descending
+    sorted.sort_by(|a, b| b.4.cmp(&a.4).then_with(|| b.3.cmp(&a.3)));
+
+    sorted
+        .into_iter()
+        .map(|(serial, hostname, ip, last_seen, _)| AssignCandidate {
+            serial,
+            hostname,
+            last_seen_label: format!("{} ({})", last_seen.format("%Y-%m-%d %H:%M"), ip),
+        })
+        .collect()
 }
 
 /// Extract the serial number from the first module in a device config JSON.
@@ -802,6 +934,133 @@ pub async fn unassign_serial(
         .into_response()
 }
 
+#[derive(Deserialize)]
+pub(crate) struct AssignSerialForm {
+    serial: String,
+}
+
+/// POST /devices/{name}/assign-serial — set modules[0].serial to the chosen value.
+pub async fn assign_serial(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<AssignSerialForm>,
+) -> Response {
+    if form.serial.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html("<html><body><p>No serial selected</p></body></html>"),
+        )
+            .into_response();
+    }
+
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    let flat_path = base_dir.join("logical-devices").join(format!("{}.json", name));
+    let dir_path = base_dir.join("logical-devices").join(&name).join("config.json");
+    let json_path = if flat_path.exists() {
+        flat_path
+    } else if dir_path.exists() {
+        dir_path
+    } else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(format!(
+                "<html><body><p>Device '{}' not found</p></body></html>",
+                name
+            )),
+        )
+            .into_response();
+    };
+
+    let content = match std::fs::read_to_string(&json_path) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(path = %json_path.display(), error = %err, "Failed to read device config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to read device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let mut config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    // Set serial on the first module
+    if let Some(modules) = config.get_mut("modules").and_then(|m| m.as_array_mut()) {
+        if let Some(first_module) = modules.first_mut() {
+            first_module["serial"] = serde_json::Value::String(form.serial.trim().to_string());
+            debug!(name = %name, serial = %form.serial, "Assigned serial to first module");
+        }
+    }
+
+    let updated = match serde_json::to_string_pretty(&config) {
+        Ok(s) => s,
+        Err(err) => {
+            warn!(error = %err, "Failed to serialise updated device config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(err) = std::fs::write(&json_path, &updated) {
+        warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(format!(
+                "<html><body><p>Failed to write device config: {}</p></body></html>",
+                err
+            )),
+        )
+            .into_response();
+    }
+
+    info!(name = %name, serial = %form.serial, "Serial assigned to device, recompiling config");
+
+    let compile_result = compile_device_config(&name, base_dir, &state.config);
+    match &compile_result {
+        Ok(()) => info!(name = %name, "Config compiled successfully after serial assign"),
+        Err(e) => warn!(name = %name, error = %e, "Config compilation failed after serial assign"),
+    }
+
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, format!("/devices/{}", name))],
+    )
+        .into_response()
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -810,6 +1069,7 @@ pub fn routes() -> Router<AppState> {
         .route("/devices/{name}", get(device_detail))
         .route("/devices/{name}/ports", post(update_ports))
         .route("/devices/{name}/unassign-serial", post(unassign_serial))
+        .route("/devices/{name}/assign-serial", post(assign_serial))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

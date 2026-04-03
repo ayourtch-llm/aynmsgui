@@ -57,6 +57,20 @@ impl AppState {
             device.version = Some(v.to_string());
         }
         tracing::info!(serial = %serial, ip = %ip, "Registered/updated known device");
+
+        // Persist to disk
+        let path = &self.config.known_devices_file;
+        let devices_vec: Vec<&aycallhome::Device> = devices.values().collect();
+        match serde_json::to_string_pretty(&devices_vec) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, &json) {
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to save known devices");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize known devices");
+            }
+        }
     }
 
     pub fn new(

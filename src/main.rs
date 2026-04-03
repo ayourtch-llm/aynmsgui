@@ -144,24 +144,41 @@ async fn main() {
         None
     };
 
-    // Load known devices from callhome address map URLs
-    let known_devices = if !cfg.address_map_urls.is_empty() {
-        let mut all_devices = indexmap::IndexMap::new();
-        for url in &cfg.address_map_urls {
-            match aycallhome::try_load_devices_ordered(url).await {
-                Ok(devices) => {
-                    info!(url = %url, count = devices.len(), "Loaded devices from address map");
-                    all_devices.extend(devices);
-                }
-                Err(e) => {
-                    warn!(url = %url, error = %e, "Failed to load devices from address map");
+    // Load known devices: first from local file, then merge from callhome URLs
+    let mut known_devices = indexmap::IndexMap::new();
+
+    // Load from local known_devices.json (persisted from previous sessions)
+    if cfg.known_devices_file.exists() {
+        match std::fs::read_to_string(&cfg.known_devices_file) {
+            Ok(content) if !content.trim().is_empty() => {
+                match serde_json::from_str::<Vec<aycallhome::Device>>(&content) {
+                    Ok(devices) => {
+                        info!(count = devices.len(), path = %cfg.known_devices_file.display(), "Loaded known devices from file");
+                        for d in devices {
+                            known_devices.insert(d.serial.clone(), d);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(path = %cfg.known_devices_file.display(), error = %e, "Failed to parse known devices file");
+                    }
                 }
             }
+            _ => {}
         }
-        all_devices
-    } else {
-        indexmap::IndexMap::new()
-    };
+    }
+
+    // Merge from callhome address map URLs (if configured)
+    for url in &cfg.address_map_urls {
+        match aycallhome::try_load_devices_ordered(url).await {
+            Ok(devices) => {
+                info!(url = %url, count = devices.len(), "Loaded devices from address map");
+                known_devices.extend(devices);
+            }
+            Err(e) => {
+                warn!(url = %url, error = %e, "Failed to load devices from address map");
+            }
+        }
+    }
 
     let state = AppState::new(cfg.clone(), htpasswd, asset_cache, known_devices);
 

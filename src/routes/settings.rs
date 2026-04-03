@@ -16,6 +16,8 @@ use crate::state::{AppState, DeviceCredentials};
 pub(crate) struct CredentialsForm {
     username: String,
     password: String,
+    #[serde(default)]
+    jumphost_enabled: Option<String>,
     jumphost_address: String,
     jumphost_username: String,
     jumphost_password: String,
@@ -41,9 +43,10 @@ pub async fn credentials_page(State(state): State<AppState>) -> Response {
   <label for="password">Password:</label><br>
   <input type="password" id="password" name="password" value="{password}" required><br><br>
 <h2>Jumphost (optional)</h2>
-<p>When configured, connections go through the jumphost first. The command template
+<p>When enabled, connections go through the jumphost first. The command template
 is run on the jumphost shell to reach the target device.<br>
 Placeholders: <code>{{username}}</code> = device username, <code>{{target_ip}}</code> = device IP.</p>
+  <label><input type="checkbox" name="jumphost_enabled" value="on" {jumphost_checked}> Enable jumphost</label><br><br>
   <label for="jumphost_address">Jumphost Address (host or host:port):</label><br>
   <input type="text" id="jumphost_address" name="jumphost_address" value="{jumphost_address}" placeholder="10.1.1.1"><br><br>
   <label for="jumphost_username">Jumphost Username:</label><br>
@@ -60,6 +63,7 @@ Placeholders: <code>{{username}}</code> = device username, <code>{{target_ip}}</
 </html>"#,
         username = html_escape(&creds.username),
         password = html_escape(&creds.password),
+        jumphost_checked = if creds.jumphost_enabled { "checked" } else { "" },
         jumphost_address = html_escape(&creds.jumphost_address),
         jumphost_username = html_escape(&creds.jumphost_username),
         jumphost_password = html_escape(&creds.jumphost_password),
@@ -76,6 +80,7 @@ pub async fn update_credentials(
     let creds = DeviceCredentials {
         username: form.username.trim().to_string(),
         password: form.password.trim().to_string(),
+        jumphost_enabled: form.jumphost_enabled.as_deref() == Some("on"),
         jumphost_address: form.jumphost_address.trim().to_string(),
         jumphost_username: form.jumphost_username.trim().to_string(),
         jumphost_password: form.jumphost_password.trim().to_string(),

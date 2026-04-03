@@ -13,7 +13,10 @@ use crate::config::AppConfig;
 pub struct DeviceCredentials {
     pub username: String,
     pub password: String,
-    /// Jumphost settings (all optional — when address is empty, direct connection is used).
+    /// Whether jumphost routing is enabled.
+    #[serde(default)]
+    pub jumphost_enabled: bool,
+    /// Jumphost settings.
     #[serde(default)]
     pub jumphost_address: String,
     #[serde(default)]
@@ -28,9 +31,9 @@ pub struct DeviceCredentials {
 }
 
 impl DeviceCredentials {
-    /// Returns true if jumphost is configured.
+    /// Returns true if jumphost is enabled and configured.
     pub fn has_jumphost(&self) -> bool {
-        !self.jumphost_address.is_empty() && !self.jumphost_command.is_empty()
+        self.jumphost_enabled && !self.jumphost_address.is_empty() && !self.jumphost_command.is_empty()
     }
 
     /// Build the SSH command to run on the jumphost for a given target IP.
@@ -58,6 +61,7 @@ impl DeviceCredentials {
         let creds = DeviceCredentials {
             username: config.device_username.clone().unwrap_or_default(),
             password: config.device_password.clone().unwrap_or_default(),
+            jumphost_enabled: false,
             jumphost_address: String::new(),
             jumphost_username: String::new(),
             jumphost_password: String::new(),

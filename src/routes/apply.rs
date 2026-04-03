@@ -223,19 +223,30 @@ pub async fn apply_config(
     ).await;
 
     match result {
-        aycfgapply::apply::ApplyResult::Applied { serial, post_config, mismatch } => {
-            info!(serial = %serial, mismatch = mismatch, "Config applied successfully");
-
+        aycfgapply::apply::ApplyResult::Applied { serial, post_config, mismatch: _ } => {
             // Save post-apply config as the new current config
             if let Err(e) = std::fs::write(&current_file, &post_config) {
                 warn!(error = %e, "Failed to save post-apply config");
             }
 
-            let status_msg = if mismatch {
-                "<p style='color:orange'>Warning: Post-apply verification detected a mismatch. \
-                 The applied config may differ from the target.</p>"
+            // Do our own verification: re-run delta on normalized post-apply config.
+            // If delta is empty, the target changes were successfully applied.
+            // (The built-in mismatch check does strict string equality which
+            // false-positives on default commands, crypto keys, etc.)
+            let norm_post = aycfgapply::normalize::normalize_config(&post_config);
+            let remaining_delta = aycicdiff::generate_delta(&norm_post, &target_config, None);
+            let effectively_applied = remaining_delta.trim().is_empty();
+
+            info!(serial = %serial, effectively_applied = effectively_applied, "Config applied");
+
+            let status_msg = if effectively_applied {
+                "<p style='color:green'>Post-apply verification passed — no remaining delta.</p>"
             } else {
-                "<p style='color:green'>Post-apply verification passed — config matches target.</p>"
+                &format!(
+                    "<p style='color:orange'>Warning: Post-apply delta is not empty. \
+                     Remaining changes:</p><pre style='background:#fff3cd; padding:0.5rem;'>{}</pre>",
+                    html_escape(remaining_delta.trim())
+                )
             };
 
             Html(format!(

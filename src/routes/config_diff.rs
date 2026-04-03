@@ -84,7 +84,7 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         let current_file = current_path.join(&*file_name_str);
 
         let target_config = match std::fs::read_to_string(&target_file) {
-            Ok(c) => c,
+            Ok(c) => aycfgapply::normalize::normalize_target_config(&c),
             Err(err) => {
                 warn!(path = %target_file.display(), error = %err, "Failed to read target config");
                 continue;
@@ -92,7 +92,7 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         };
 
         let current_config = match std::fs::read_to_string(&current_file) {
-            Ok(c) => c,
+            Ok(c) => aycfgapply::normalize::normalize_config(&c),
             Err(_) => {
                 // No current config — treat as empty (device has nothing applied yet)
                 debug!(name = %name, "No current config found, treating as empty");
@@ -182,7 +182,7 @@ pub async fn diff_detail(
     let current_file = current_path.join(&file_name);
 
     let target_config = match std::fs::read_to_string(&target_file) {
-        Ok(c) => c,
+        Ok(c) => aycfgapply::normalize::normalize_target_config(&c),
         Err(err) => {
             warn!(path = %target_file.display(), error = %err, "Target config not found");
             return (
@@ -197,7 +197,7 @@ pub async fn diff_detail(
     };
 
     let current_config = match std::fs::read_to_string(&current_file) {
-        Ok(c) => c,
+        Ok(c) => aycfgapply::normalize::normalize_config(&c),
         Err(_) => {
             debug!(name = %name, "No current config found for detail view, using empty");
             String::new()

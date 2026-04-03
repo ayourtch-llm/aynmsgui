@@ -223,6 +223,23 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
         .and_then(|v| v.as_str())
         .unwrap_or("-");
 
+    let serial = first_module_serial(&d.raw_config);
+    let serial_display = match &serial {
+        Some(s) => s.as_str(),
+        None => "-",
+    };
+
+    let unassign_button = if serial.is_some() {
+        format!(
+            r#" <form method="POST" action="/devices/{name}/unassign-serial" style="display:inline">
+<button type="submit" onclick="return confirm('Remove serial from this device?')">Unassign Serial</button>
+</form>"#,
+            name = d.name,
+        )
+    } else {
+        String::new()
+    };
+
     // Build port assignment table with editable service dropdowns
     let mut port_rows = String::new();
     if let Some(modules) = d.raw_config.get("modules").and_then(|m| m.as_array()) {
@@ -290,6 +307,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
 <tr><th>Name</th><td>{name}</td></tr>
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>Role</th><td>{role}</td></tr>
+<tr><th>Serial</th><td>{serial}{unassign_button}</td></tr>
 </table>
 <h2>Port Assignments</h2>
 {ports_section}
@@ -303,6 +321,8 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String]) -> 
         name = d.name,
         hostname = hostname,
         role = role,
+        serial = html_escape(serial_display),
+        unassign_button = unassign_button,
         ports_section = ports_section,
         config_json = html_escape(&d.config_json),
     )
@@ -665,6 +685,123 @@ pub async fn update_ports(
         .into_response()
 }
 
+/// POST /devices/{name}/unassign-serial — clear the serial from all modules.
+pub async fn unassign_serial(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Response {
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    // Locate the device config file
+    let flat_path = base_dir.join("logical-devices").join(format!("{}.json", name));
+    let dir_path = base_dir.join("logical-devices").join(&name).join("config.json");
+    let json_path = if flat_path.exists() {
+        flat_path
+    } else if dir_path.exists() {
+        dir_path
+    } else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(format!(
+                "<html><body><p>Device '{}' not found</p></body></html>",
+                name
+            )),
+        )
+            .into_response();
+    };
+
+    let content = match std::fs::read_to_string(&json_path) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(path = %json_path.display(), error = %err, "Failed to read device config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to read device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let mut config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    // Clear serial from all modules
+    if let Some(modules) = config.get_mut("modules").and_then(|m| m.as_array_mut()) {
+        for module in modules.iter_mut() {
+            if module.get("serial").is_some() {
+                module["serial"] = serde_json::Value::Null;
+                debug!(name = %name, "Cleared serial from module");
+            }
+        }
+    }
+
+    let updated = match serde_json::to_string_pretty(&config) {
+        Ok(s) => s,
+        Err(err) => {
+            warn!(error = %err, "Failed to serialise updated device config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(err) = std::fs::write(&json_path, &updated) {
+        warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(format!(
+                "<html><body><p>Failed to write device config: {}</p></body></html>",
+                err
+            )),
+        )
+            .into_response();
+    }
+
+    info!(name = %name, "Serial unassigned from device, recompiling config");
+
+    let compile_result = compile_device_config(&name, base_dir, &state.config);
+    match &compile_result {
+        Ok(()) => info!(name = %name, "Config compiled successfully after serial unassign"),
+        Err(e) => warn!(name = %name, error = %e, "Config compilation failed after serial unassign"),
+    }
+
+    // Redirect back to device detail
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, format!("/devices/{}", name))],
+    )
+        .into_response()
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -672,6 +809,7 @@ pub fn routes() -> Router<AppState> {
         .route("/devices", get(list_devices))
         .route("/devices/{name}", get(device_detail))
         .route("/devices/{name}/ports", post(update_ports))
+        .route("/devices/{name}/unassign-serial", post(unassign_serial))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ mod auth;
 pub mod assignments;
 mod config;
 mod error;
+pub mod jumphost_connector;
 mod routes;
 mod sse;
 mod state;

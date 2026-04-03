@@ -214,7 +214,7 @@ pub async fn retrieve_configs(
     };
 
     // 7. Run retrieval
-    let connector = aycfgapply::cisco_connector::CiscoIosConnector;
+    let connector = crate::jumphost_connector::JumphostConnector::from_credentials(&creds);
     let summary = match aycfgapply::init::run_init(&init_config, &connector, &device_map, &repo).await {
         Ok(s) => s,
         Err(e) => {

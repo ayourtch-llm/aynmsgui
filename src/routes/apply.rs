@@ -211,7 +211,7 @@ pub async fn apply_config(
         delta: delta.clone(),
     };
 
-    let connector = aycfgapply::cisco_connector::CiscoIosConnector;
+    let connector = crate::jumphost_connector::JumphostConnector::from_credentials(&creds);
     let result = aycfgapply::apply::apply_device_change(
         &connector,
         &change,

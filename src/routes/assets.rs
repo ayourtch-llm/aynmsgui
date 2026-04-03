@@ -108,10 +108,13 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
             let last_ipv4 = device
                 .and_then(|d| d.last_ipv4.as_deref())
                 .unwrap_or("-");
+            let last_ipv6 = device
+                .and_then(|d| d.last_ipv6.as_deref())
+                .unwrap_or("-");
             format!(
                 "<tr><td><a href=\"/assets/{serial}\">{serial}</a></td>\
                  <td>{asset_tag}</td><td>{vendor}</td><td>{sku}</td>\
-                 <td>{platform}</td><td>{hostname}</td><td>{last_ipv4}</td></tr>",
+                 <td>{platform}</td><td>{hostname}</td><td>{last_ipv4}</td><td>{last_ipv6}</td></tr>",
                 serial = r.serial_number,
                 asset_tag = r.asset_tag,
                 vendor = r.vendor,
@@ -119,6 +122,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
                 platform = r.platform.as_deref().unwrap_or("-"),
                 hostname = hostname,
                 last_ipv4 = last_ipv4,
+                last_ipv6 = last_ipv6,
             )
         })
         .collect();
@@ -130,7 +134,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
 <body>
 <h1>Asset Inventory</h1>
 <table>
-<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th></tr>
+<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th></tr>
 {rows}
 </table>
 </body>

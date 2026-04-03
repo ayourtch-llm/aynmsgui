@@ -321,11 +321,26 @@ pub async fn import_device(
 
                 match extract_result {
                     Ok(Ok(())) => {
-                        // Extraction creates config under the full hostname.
-                        // If we have a shortened logical name, rename.
-                        if logical_name != *hostname {
-                            let full_dir = ld_dir.join(hostname);
-                            let full_json = ld_dir.join(format!("{}.json", hostname));
+                        // Extraction may create config under the hostname or serial.
+                        // Find which one it created, then rename to logical_name.
+                        let serial = sv_info.serial_number.as_str();
+                        let candidates = [hostname.as_str(), serial];
+
+                        let mut source_found = None;
+                        for candidate in &candidates {
+                            let cand_dir = ld_dir.join(candidate);
+                            let cand_json = ld_dir.join(format!("{}.json", candidate));
+                            if cand_dir.exists() || cand_json.exists() {
+                                if *candidate != logical_name {
+                                    source_found = Some(candidate.to_string());
+                                }
+                                break;
+                            }
+                        }
+
+                        if let Some(source_name) = source_found {
+                            let full_dir = ld_dir.join(&source_name);
+                            let full_json = ld_dir.join(format!("{}.json", source_name));
                             let target_dir = ld_dir.join(&logical_name);
                             let target_json = ld_dir.join(format!("{}.json", logical_name));
 
@@ -337,7 +352,7 @@ pub async fn import_device(
                                 if let Err(e) = std::fs::rename(&full_dir, &target_dir) {
                                     warn!(error = %e, "Failed to rename logical device directory");
                                 } else {
-                                    info!(from = %hostname, to = %logical_name, "Renamed logical device directory");
+                                    info!(from = %source_name, to = %logical_name, "Renamed logical device directory");
                                 }
                             } else if full_json.exists() {
                                 if target_json.exists() {
@@ -346,7 +361,7 @@ pub async fn import_device(
                                 if let Err(e) = std::fs::rename(&full_json, &target_json) {
                                     warn!(error = %e, "Failed to rename logical device JSON");
                                 } else {
-                                    info!(from = %hostname, to = %logical_name, "Renamed logical device JSON");
+                                    info!(from = %source_name, to = %logical_name, "Renamed logical device JSON");
                                 }
                             }
                         }

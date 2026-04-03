@@ -59,8 +59,6 @@ pub async fn import_device(
             .into_response();
     }
 
-    let creds = state.get_device_credentials().await;
-
     let inv_path = match &state.asset_inventory_path {
         Some(p) => p.as_ref().clone(),
         None => {
@@ -76,15 +74,11 @@ pub async fn import_device(
     };
 
     let ip = form.ip.trim().to_string();
-    let target = crate::state::ssh_target(&ip, 22);
     info!(ip = %ip, "Starting device import via SSH");
 
-    // 1. Connect to device via SSH
-    let mut conn = match ayclic::CiscoIosConn::with_timeouts(
-        &target,
-        ayclic::ConnectionType::Ssh,
-        &creds.username,
-        &creds.password,
+    // 1. Connect to device via SSH (direct or via jumphost)
+    let mut conn = match state.connect_to_device(
+        &ip,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(30),
     )

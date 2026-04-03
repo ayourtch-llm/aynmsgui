@@ -1277,8 +1277,6 @@ pub async fn start_upgrade(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Response {
-    let creds = state.get_device_credentials().await;
-
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
         _ => {
@@ -1373,17 +1371,18 @@ pub async fn start_upgrade(
     // Spawn the upgrade task
     let ops = state.operations.clone();
     let spawned_op_id = op_id.clone();
-    let username = creds.username.clone();
-    let password = creds.password.clone();
+    let upgrade_state = state.clone();
+    let upgrade_ip = ip.clone();
     let ssh_target = crate::state::ssh_target(&ip, 22);
 
     tokio::spawn(async move {
-        // Connect via SSH
-        let mut conn = match ayclic::CiscoIosConn::with_timeouts(
-            &ssh_target,
-            ayclic::ConnectionType::Ssh,
-            &username,
-            &password,
+        let creds = upgrade_state.get_device_credentials().await;
+        let username = creds.username.clone();
+        let password = creds.password.clone();
+
+        // Connect via SSH (direct or via jumphost)
+        let mut conn = match upgrade_state.connect_to_device(
+            &upgrade_ip,
             std::time::Duration::from_secs(15),
             std::time::Duration::from_secs(120),
         )

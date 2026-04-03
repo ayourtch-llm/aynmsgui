@@ -59,8 +59,6 @@ pub async fn extract_device(
             .into_response();
     }
 
-    let creds = state.get_device_credentials().await;
-
     let base_dir = match &state.config.cfggen_base_dir {
         Some(p) => p.clone(),
         None => {
@@ -92,15 +90,11 @@ pub async fn extract_device(
     }
 
     let ip = form.ip.trim().to_string();
-    let target = crate::state::ssh_target(&ip, 22);
     info!(ip = %ip, "Starting config extraction via SSH");
 
-    // Connect to device via SSH
-    let mut conn = match ayclic::CiscoIosConn::with_timeouts(
-        &target,
-        ayclic::ConnectionType::Ssh,
-        &creds.username,
-        &creds.password,
+    // Connect to device via SSH (direct or via jumphost)
+    let mut conn = match state.connect_to_device(
+        &ip,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(30),
     )

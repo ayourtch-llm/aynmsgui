@@ -8,11 +8,37 @@ use crate::auth::htpasswd::HtpasswdStore;
 use crate::auth::session::SessionStore;
 use crate::config::AppConfig;
 
-/// Credentials used to connect to network devices via SSH.
+/// Credentials and connection settings for reaching network devices via SSH.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceCredentials {
     pub username: String,
     pub password: String,
+    /// Jumphost settings (all optional — when address is empty, direct connection is used).
+    #[serde(default)]
+    pub jumphost_address: String,
+    #[serde(default)]
+    pub jumphost_username: String,
+    #[serde(default)]
+    pub jumphost_password: String,
+    /// Command template to run on the jumphost to reach the target device.
+    /// Placeholders: {username} = device username, {target_ip} = device IP.
+    /// Example: "ssh -b 10.100.252.5 {username}@{target_ip}"
+    #[serde(default)]
+    pub jumphost_command: String,
+}
+
+impl DeviceCredentials {
+    /// Returns true if jumphost is configured.
+    pub fn has_jumphost(&self) -> bool {
+        !self.jumphost_address.is_empty() && !self.jumphost_command.is_empty()
+    }
+
+    /// Build the SSH command to run on the jumphost for a given target IP.
+    pub fn jumphost_ssh_command(&self, target_ip: &str) -> String {
+        self.jumphost_command
+            .replace("{username}", &self.username)
+            .replace("{target_ip}", target_ip)
+    }
 }
 
 impl DeviceCredentials {
@@ -32,6 +58,10 @@ impl DeviceCredentials {
         let creds = DeviceCredentials {
             username: config.device_username.clone().unwrap_or_default(),
             password: config.device_password.clone().unwrap_or_default(),
+            jumphost_address: String::new(),
+            jumphost_username: String::new(),
+            jumphost_password: String::new(),
+            jumphost_command: String::new(),
         };
 
         // Persist the initial credentials
@@ -247,5 +277,98 @@ impl AppState {
             tracing::warn!(error = %e, "Failed to save device credentials");
         }
         *self.device_credentials.write().await = creds;
+    }
+
+    /// Connect to a device, either directly or via jumphost if configured.
+    ///
+    /// `target_ip` is the device IP address (without port).
+    pub async fn connect_to_device(
+        &self,
+        target_ip: &str,
+        timeout: std::time::Duration,
+        read_timeout: std::time::Duration,
+    ) -> Result<ayclic::CiscoIosConn, ayclic::CiscoIosError> {
+        let creds = self.get_device_credentials().await;
+
+        if creds.has_jumphost() {
+            let ssh_command = creds.jumphost_ssh_command(target_ip);
+            info!(
+                jumphost = %creds.jumphost_address,
+                command = %ssh_command,
+                "Connecting via jumphost"
+            );
+
+            let jump_target = ssh_target(&creds.jumphost_address, 22);
+            let jump_addr: std::net::SocketAddr = jump_target.parse()
+                .map_err(|e| ayclic::CiscoIosError::InvalidConnectionType(
+                    format!("invalid jumphost address '{}': {}", jump_target, e),
+                ))?;
+
+            // TextFSMPlus template for the jumphost hop:
+            // 1. Wait for jumphost prompt
+            // 2. Send the SSH command
+            // 3. Wait for device password prompt
+            // 4. Send device password
+            // 5. Wait for device IOS prompt
+            // 6. Send terminal length 0
+            let jumphost_template = format!(
+                r#"Value Preset DevicePassword ()
+
+Start
+  ^.*[\$#>]\s* -> Send "{ssh_command}" WaitPassword
+
+WaitPassword
+  ^[Pp]assword:\s* -> Send ${{DevicePassword}} WaitPrompt
+  ^.*# -> Send "terminal length 0" TermLen
+  ^.*> -> Send "terminal length 0" TermLen
+
+WaitPrompt
+  ^.*# -> Send "terminal length 0" TermLen
+  ^.*> -> Send "terminal length 0" TermLen
+  ^.*refused.* -> Error "connection refused"
+  ^.*denied.* -> Error "permission denied"
+
+TermLen
+  ^.*# -> Done
+  ^.*> -> Done
+"#,
+                ssh_command = ssh_command,
+            );
+
+            let hops = vec![
+                ayclic::Hop::Transport(ayclic::TransportSpec::Ssh {
+                    target: jump_addr,
+                    auth: ayclic::SshAuth::Password {
+                        username: creds.jumphost_username.clone(),
+                        password: creds.jumphost_password.clone(),
+                    },
+                    source: None,
+                }),
+                ayclic::Hop::Interactive(
+                    aytextfsmplus::TextFSMPlus::from_str(&jumphost_template)
+                        .with_preset("DevicePassword", &creds.password),
+                ),
+            ];
+
+            let path = ayclic::ConnectionPath::new(hops).with_timeout(timeout);
+            ayclic::CiscoIosConn::from_path(
+                path,
+                &ssh_target(target_ip, 22),
+                &aytextfsmplus::NoVars,
+                &aytextfsmplus::NoFuncs,
+            )
+            .await
+        } else {
+            let target = ssh_target(target_ip, 22);
+            ayclic::CiscoIosConn::with_timeouts(
+                &target,
+                ayclic::ConnectionType::Ssh,
+                &creds.username,
+                &creds.password,
+                timeout,
+                read_timeout,
+            )
+            .await
+        }
     }
 }

@@ -60,8 +60,6 @@ pub async fn extract_sw_device(
             .into_response();
     }
 
-    let creds = state.get_device_credentials().await;
-
     // Determine output directory: cfggen_base_dir/software-images
     let sw_dir = match &state.config.cfggen_base_dir {
         Some(base) if base.exists() => base.join("software-images"),
@@ -93,15 +91,11 @@ pub async fn extract_sw_device(
     }
 
     let ip = form.ip.trim().to_string();
-    let target = crate::state::ssh_target(&ip, 22);
     info!(ip = %ip, "Starting software image extraction via SSH");
 
-    // Connect to device
-    let mut conn = match ayclic::CiscoIosConn::with_timeouts(
-        &target,
-        ayclic::ConnectionType::Ssh,
-        &creds.username,
-        &creds.password,
+    // Connect to device (direct or via jumphost)
+    let mut conn = match state.connect_to_device(
+        &ip,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(120), // longer timeout for image transfer
     )

@@ -59,6 +59,8 @@ aycfgprovision = { path = "../aycfgprovision" }
 aycicdiff = { path = "../aycicdiff" }
 ayiosupdate-lib = { path = "../ayiosupdate/crates/ayiosupdate-lib" }
 ayclic = { path = "../ayclic/ayclic" }
+aytextfsmplus = { path = "../ayclic/aytextfsmplus" }
+aycalc = { path = "../aycalc" }
 
 [dev-dependencies]
 tempfile = "3"

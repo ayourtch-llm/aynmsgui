@@ -47,6 +47,9 @@ uuid = { version = "1", features = ["v4"] }
 # Async trait
 async-trait = "0.1"
 
+# Regex
+regex = "1"
+
 # Indexmap for ordered maps
 indexmap = { version = "2", features = ["serde"] }
 

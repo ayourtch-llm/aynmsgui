@@ -127,6 +127,9 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
   <a class="card" href="/retrieve">
     <div class="label">Retrieve Configs</div>
   </a>
+  <a class="card" href="/settings/credentials">
+    <div class="label">Connection Settings</div>
+  </a>
 </div>
 </body>
 </html>"#,

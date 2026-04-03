@@ -66,8 +66,7 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
     );
 
     let content = format!(
-        r#"<h1>Dashboard</h1>
-<div class="cards">
+        r#"<div class="cards">
   <a class="card" href="/assets">
     <div class="count">{asset_count}</div>
     <div class="label">Assets</div>

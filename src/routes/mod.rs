@@ -80,6 +80,7 @@ pub fn page_html(title: &str, username: &str, content: &str) -> String {
       <a href="/retrieve">Retrieve Configs</a>
     </div>
   </li>
+  <li><a href="/operations">Operations</a></li>
   <li><a href="/settings/credentials">Settings</a></li>
 </ul>
 </div>

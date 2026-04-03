@@ -117,7 +117,7 @@ pub async fn extract_sw_device(
         let mut conn = match extract_state.connect_to_device(
             &extract_ip,
             std::time::Duration::from_secs(15),
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(1200), // must match extraction timeout for copy command
         )
         .await
         {

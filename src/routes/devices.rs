@@ -203,8 +203,9 @@ pub async fn device_detail(
 
     let config_json = serde_json::to_string_pretty(&raw_config).unwrap_or_else(|_| content.clone());
 
-    // Load available services from cfggen services directory
+    // Load available services and software images from cfggen directories
     let available_services = load_available_services(base_dir);
+    let available_images = load_available_software_images(base_dir);
 
     // Build assign candidates if device has no serial
     let candidates = if first_module_serial(&raw_config).is_none() {
@@ -219,11 +220,11 @@ pub async fn device_detail(
         raw_config,
     };
 
-    let html = render_device_detail(&detail, &available_services, &candidates);
+    let html = render_device_detail(&detail, &available_services, &available_images, &candidates);
     Html(html).into_response()
 }
 
-fn render_device_detail(d: &DeviceDetailView, available_services: &[String], candidates: &[AssignCandidate]) -> String {
+fn render_device_detail(d: &DeviceDetailView, available_services: &[String], available_images: &[String], candidates: &[AssignCandidate]) -> String {
     let hostname = d
         .raw_config
         .get("hostname")
@@ -236,6 +237,46 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], can
         .get("role")
         .and_then(|v| v.as_str())
         .unwrap_or("-");
+
+    let current_image = d
+        .raw_config
+        .get("software-image")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let image_options: String = available_images
+        .iter()
+        .map(|img| {
+            let selected = if img == current_image { " selected" } else { "" };
+            format!(
+                "<option value=\"{img}\"{selected}>{img}</option>",
+                img = html_escape(img),
+                selected = selected,
+            )
+        })
+        .collect();
+
+    // If current image isn't in the list, add it as selected
+    let image_extra = if !current_image.is_empty()
+        && !available_images.iter().any(|i| i == current_image)
+    {
+        format!(
+            "<option value=\"{img}\" selected>{img}</option>",
+            img = html_escape(current_image),
+        )
+    } else {
+        String::new()
+    };
+
+    let software_image_field = format!(
+        r#"<form method="POST" action="/devices/{name}/software-image" style="display:inline">
+<select name="software_image">{image_extra}{image_options}</select>
+<button type="submit">Update</button>
+</form>"#,
+        name = d.name,
+        image_extra = image_extra,
+        image_options = image_options,
+    );
 
     let serial = first_module_serial(&d.raw_config);
     let serial_display = match &serial {
@@ -345,6 +386,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], can
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>Role</th><td>{role}</td></tr>
 <tr><th>Serial</th><td>{serial}{serial_action}</td></tr>
+<tr><th>Software Image</th><td>{software_image_field}</td></tr>
 </table>
 <h2>Port Assignments</h2>
 {ports_section}
@@ -360,6 +402,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], can
         role = role,
         serial = html_escape(serial_display),
         serial_action = serial_action,
+        software_image_field = software_image_field,
         ports_section = ports_section,
         config_json = html_escape(&d.config_json),
     )
@@ -425,6 +468,24 @@ fn compile_device_config(
     }
 
     Ok(())
+}
+
+/// Load available software image filenames from cfggen software-images directory.
+fn load_available_software_images(base_dir: &std::path::Path) -> Vec<String> {
+    let images_dir = base_dir.join("software-images");
+    let mut images = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&images_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    images.push(name.to_string());
+                }
+            }
+        }
+    }
+    images.sort();
+    images
 }
 
 /// Load available service names from cfggen services directory.
@@ -1061,6 +1122,119 @@ pub async fn assign_serial(
         .into_response()
 }
 
+#[derive(Deserialize)]
+pub(crate) struct SoftwareImageForm {
+    software_image: String,
+}
+
+/// POST /devices/{name}/software-image — update the software-image field.
+pub async fn update_software_image(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<SoftwareImageForm>,
+) -> Response {
+    let base_dir = match &state.config.cfggen_base_dir {
+        Some(d) if d.join("logical-devices").exists() => d,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Html("<html><body><p>Logical devices not configured</p></body></html>"),
+            )
+                .into_response();
+        }
+    };
+
+    let flat_path = base_dir.join("logical-devices").join(format!("{}.json", name));
+    let dir_path = base_dir.join("logical-devices").join(&name).join("config.json");
+    let json_path = if flat_path.exists() {
+        flat_path
+    } else if dir_path.exists() {
+        dir_path
+    } else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(format!(
+                "<html><body><p>Device '{}' not found</p></body></html>",
+                name
+            )),
+        )
+            .into_response();
+    };
+
+    let content = match std::fs::read_to_string(&json_path) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(path = %json_path.display(), error = %err, "Failed to read device config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to read device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    let mut config: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(err) => {
+            warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    config["software-image"] = serde_json::Value::String(form.software_image.trim().to_string());
+
+    let updated = match serde_json::to_string_pretty(&config) {
+        Ok(s) => s,
+        Err(err) => {
+            warn!(error = %err, "Failed to serialise updated device config");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Html(format!(
+                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
+                    err
+                )),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(err) = std::fs::write(&json_path, &updated) {
+        warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Html(format!(
+                "<html><body><p>Failed to write device config: {}</p></body></html>",
+                err
+            )),
+        )
+            .into_response();
+    }
+
+    info!(name = %name, image = %form.software_image, "Software image updated, recompiling config");
+
+    let compile_result = compile_device_config(&name, base_dir, &state.config);
+    match &compile_result {
+        Ok(()) => info!(name = %name, "Config compiled successfully after software image update"),
+        Err(e) => warn!(name = %name, error = %e, "Config compilation failed after software image update"),
+    }
+
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, format!("/devices/{}", name))],
+    )
+        .into_response()
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -1070,6 +1244,7 @@ pub fn routes() -> Router<AppState> {
         .route("/devices/{name}/ports", post(update_ports))
         .route("/devices/{name}/unassign-serial", post(unassign_serial))
         .route("/devices/{name}/assign-serial", post(assign_serial))
+        .route("/devices/{name}/software-image", post(update_software_image))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

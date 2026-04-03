@@ -1,3 +1,4 @@
+pub mod apply;
 pub mod assets;
 pub mod assignments;
 pub mod config_diff;
@@ -34,6 +35,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(import::routes())
         .merge(extract::routes())
         .merge(extract_sw::routes())
+        .merge(apply::routes())
         .merge(retrieve::routes())
         .layer(middleware::from_fn_with_state(sessions, auth_middleware));
 

@@ -128,16 +128,23 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         .map(|item| {
             let status_class = if item.has_diff { "has-diff" } else { "no-diff" };
             let status_text = if item.has_diff { "Changes" } else { "No changes" };
+            let action = if item.has_diff {
+                format!("<a href=\"/apply/{name}\">Apply</a>", name = item.name)
+            } else {
+                String::new()
+            };
             format!(
                 "<tr class=\"{status_class}\">\
                  <td><a href=\"/diff/{name}\">{name}</a></td>\
                  <td>{status_text}</td>\
                  <td><pre>{preview}</pre></td>\
+                 <td>{action}</td>\
                  </tr>",
                 status_class = status_class,
                 name = item.name,
                 status_text = status_text,
                 preview = html_escape(&item.diff_preview),
+                action = action,
             )
         })
         .collect();
@@ -149,7 +156,7 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
 <body>
 <h1>Config Diff Overview</h1>
 <table>
-<tr><th>Device</th><th>Status</th><th>Preview</th></tr>
+<tr><th>Device</th><th>Status</th><th>Preview</th><th>Action</th></tr>
 {rows}
 </table>
 </body>

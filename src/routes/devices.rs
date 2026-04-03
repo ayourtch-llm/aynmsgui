@@ -5,6 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use indexmap::IndexMap;
 use serde::Serialize;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
@@ -336,12 +337,34 @@ fn compile_device_config(
         &image_source,
     )?;
 
-    // Write to target-configs directory
+    // Always write preview config keyed by device name
+    if let Some(ref preview_dir) = app_config.target_configs_preview_path {
+        std::fs::create_dir_all(preview_dir)?;
+        let preview_path = preview_dir.join(format!("{}.cfg", device_name));
+        std::fs::write(&preview_path, &compiled)?;
+        tracing::info!(path = %preview_path.display(), "Wrote preview config");
+    }
+
+    // If device has a serial, also write serial-keyed config to target-configs
+    let serial = {
+        // Read the device config JSON to extract first module serial
+        let logical_devices_dir = cfggen_base.join("logical-devices");
+        let flat_path = logical_devices_dir.join(format!("{}.json", device_name));
+        let dir_path = logical_devices_dir.join(device_name).join("config.json");
+        let json_path = if flat_path.exists() { flat_path } else { dir_path };
+        std::fs::read_to_string(&json_path)
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .and_then(|val| first_module_serial(&val))
+    };
+
     if let Some(ref target_dir) = app_config.target_configs_path {
-        std::fs::create_dir_all(target_dir)?;
-        let cfg_path = target_dir.join(format!("{}.cfg", device_name));
-        std::fs::write(&cfg_path, compiled)?;
-        tracing::info!(path = %cfg_path.display(), "Wrote compiled config");
+        if let Some(ref serial) = serial {
+            std::fs::create_dir_all(target_dir)?;
+            let cfg_path = target_dir.join(format!("{}.cfg", serial));
+            std::fs::write(&cfg_path, &compiled)?;
+            tracing::info!(path = %cfg_path.display(), serial = %serial, "Wrote serial-keyed target config");
+        }
     }
 
     Ok(())
@@ -369,6 +392,101 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+/// Load all logical device configs from the cfggen base directory.
+///
+/// Returns an `IndexMap` keyed by device name, with the parsed JSON `Value` as
+/// the value.  Supports both flat files (`logical-devices/{name}.json`) and
+/// directory layouts (`logical-devices/{name}/config.json`).
+pub fn load_all_device_configs(
+    cfggen_base_dir: &std::path::Path,
+) -> IndexMap<String, serde_json::Value> {
+    let devices_dir = cfggen_base_dir.join("logical-devices");
+    let mut configs: IndexMap<String, serde_json::Value> = IndexMap::new();
+
+    let entries = match std::fs::read_dir(&devices_dir) {
+        Ok(e) => e,
+        Err(err) => {
+            warn!(path = %devices_dir.display(), error = %err, "Failed to read logical-devices directory");
+            return configs;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        let (name, json_path) = if path.is_file() {
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let name = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            (name, path)
+        } else if path.is_dir() {
+            let name = match path.file_name().and_then(|s| s.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            (name, path.join("config.json"))
+        } else {
+            continue;
+        };
+
+        let content = match std::fs::read_to_string(&json_path) {
+            Ok(c) => c,
+            Err(err) => {
+                warn!(path = %json_path.display(), error = %err, "Failed to read device config");
+                continue;
+            }
+        };
+
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(val) => {
+                configs.insert(name, val);
+            }
+            Err(err) => {
+                warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
+            }
+        }
+    }
+
+    configs
+}
+
+/// Build a mapping from module serial number → list of logical device names
+/// that reference that serial in their `modules[].serial` field.
+pub fn serial_to_device_names(
+    configs: &IndexMap<String, serde_json::Value>,
+) -> IndexMap<String, Vec<String>> {
+    let mut map: IndexMap<String, Vec<String>> = IndexMap::new();
+
+    for (device_name, config) in configs {
+        if let Some(modules) = config.get("modules").and_then(|m| m.as_array()) {
+            for module in modules {
+                if let Some(serial) = module.get("serial").and_then(|s| s.as_str()) {
+                    map.entry(serial.to_string())
+                        .or_default()
+                        .push(device_name.clone());
+                }
+            }
+        }
+    }
+
+    map
+}
+
+/// Extract the serial number from the first module in a device config JSON.
+pub fn first_module_serial(config: &serde_json::Value) -> Option<String> {
+    config
+        .get("modules")
+        .and_then(|m| m.as_array())
+        .and_then(|modules| modules.first())
+        .and_then(|module| module.get("serial"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Read hostname and role from a JSON file path.

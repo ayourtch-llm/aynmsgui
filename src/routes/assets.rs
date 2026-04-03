@@ -5,9 +5,11 @@ use axum::{
     routing::get,
     Router,
 };
+use indexmap::IndexMap;
 use serde::Serialize;
 use tracing::debug;
 
+use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
 use crate::state::AppState;
 
 // ── View models ──────────────────────────────────────────────────────────────
@@ -43,6 +45,8 @@ pub struct AssetDetailView {
     pub last_seen_ipv6: Option<String>,
     pub first_seen: Option<String>,
     pub registered_at: String,
+    /// HTML-formatted links to logical devices that reference this serial.
+    pub logical_devices_html: String,
 }
 
 #[derive(Serialize)]
@@ -85,6 +89,18 @@ fn read_all_records(path: &std::path::Path) -> Vec<ayciam::AssetRecord> {
     }
 }
 
+/// Format logical device names as HTML links, or "-" if none.
+fn format_device_links(serial_map: &IndexMap<String, Vec<String>>, serial: &str) -> String {
+    match serial_map.get(serial) {
+        Some(names) if !names.is_empty() => names
+            .iter()
+            .map(|n| format!("<a href=\"/devices/{name}\">{name}</a>", name = n))
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => "-".to_string(),
+    }
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 pub async fn list_assets(State(state): State<AppState>) -> Response {
@@ -97,6 +113,14 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
 
     let records = read_all_records(inv_path);
     let known_devices = state.known_devices.read().await;
+
+    // Build serial → logical device name(s) mapping
+    let serial_map = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .unwrap_or_default();
 
     let rows: String = records
         .iter()
@@ -111,10 +135,12 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
             let last_ipv6 = device
                 .and_then(|d| d.last_ipv6.as_deref())
                 .unwrap_or("-");
+            let logical_devices = format_device_links(&serial_map, &r.serial_number);
             format!(
                 "<tr><td><a href=\"/assets/{serial}\">{serial}</a></td>\
                  <td>{asset_tag}</td><td>{vendor}</td><td>{sku}</td>\
-                 <td>{platform}</td><td>{hostname}</td><td>{last_ipv4}</td><td>{last_ipv6}</td></tr>",
+                 <td>{platform}</td><td>{hostname}</td><td>{last_ipv4}</td><td>{last_ipv6}</td>\
+                 <td>{logical_devices}</td></tr>",
                 serial = r.serial_number,
                 asset_tag = r.asset_tag,
                 vendor = r.vendor,
@@ -123,6 +149,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
                 hostname = hostname,
                 last_ipv4 = last_ipv4,
                 last_ipv6 = last_ipv6,
+                logical_devices = logical_devices,
             )
         })
         .collect();
@@ -134,7 +161,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
 <body>
 <h1>Asset Inventory</h1>
 <table>
-<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th></tr>
+<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr>
 {rows}
 </table>
 </body>
@@ -173,6 +200,14 @@ pub async fn asset_detail(
     let known_devices = state.known_devices.read().await;
     let device = known_devices.get(&record.serial_number);
 
+    // Build serial → logical device name(s) mapping
+    let serial_map = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .unwrap_or_default();
+
     let modules: Vec<ModuleView> = record
         .modules
         .iter()
@@ -206,6 +241,7 @@ pub async fn asset_detail(
             .and_then(|d| d.first_seen)
             .map(|t| t.to_rfc3339()),
         registered_at: record.registered_at.clone(),
+        logical_devices_html: format_device_links(&serial_map, &record.serial_number),
     };
 
     let html = render_asset_detail(&detail);
@@ -244,6 +280,7 @@ fn render_asset_detail(d: &AssetDetailView) -> String {
 <tr><th>Model</th><td>{model}</td></tr>
 <tr><th>Last IPv4</th><td>{last_ipv4}</td></tr>
 <tr><th>Last IPv6</th><td>{last_ipv6}</td></tr>
+<tr><th>Logical Device(s)</th><td>{logical_devices}</td></tr>
 </table>
 <h2>Modules</h2>
 <table>
@@ -263,6 +300,7 @@ fn render_asset_detail(d: &AssetDetailView) -> String {
         model = d.model.as_deref().unwrap_or("-"),
         last_ipv4 = d.last_ipv4.as_deref().unwrap_or("-"),
         last_ipv6 = d.last_ipv6.as_deref().unwrap_or("-"),
+        logical_devices = d.logical_devices_html,
         modules = modules_html,
     )
 }

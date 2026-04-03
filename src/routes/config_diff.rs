@@ -8,6 +8,7 @@ use axum::{
 use serde::Serialize;
 use tracing::{debug, warn};
 
+use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
 use crate::state::AppState;
 
 // ── View models ──────────────────────────────────────────────────────────────
@@ -15,6 +16,7 @@ use crate::state::AppState;
 #[derive(Serialize)]
 pub struct DiffOverviewItem {
     pub name: String,
+    pub device_name: String,
     pub has_diff: bool,
     pub diff_preview: String,
 }
@@ -22,6 +24,7 @@ pub struct DiffOverviewItem {
 #[derive(Serialize)]
 pub struct DiffDetailView {
     pub name: String,
+    pub device_name: String,
     pub delta: String,
     pub target_config: String,
     pub current_config: String,
@@ -59,6 +62,14 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             return Html(html).into_response();
         }
     };
+
+    // Build serial → logical device name(s) mapping
+    let serial_map = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .unwrap_or_default();
 
     let mut items: Vec<DiffOverviewItem> = Vec::new();
 
@@ -113,8 +124,14 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             "No changes".to_string()
         };
 
+        let device_name = serial_map
+            .get(&name)
+            .map(|names| names.join(", "))
+            .unwrap_or_else(|| "-".to_string());
+
         items.push(DiffOverviewItem {
             name,
+            device_name,
             has_diff,
             diff_preview,
         });
@@ -136,12 +153,14 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             format!(
                 "<tr class=\"{status_class}\">\
                  <td><a href=\"/diff/{name}\">{name}</a></td>\
+                 <td>{device_name}</td>\
                  <td>{status_text}</td>\
                  <td><pre>{preview}</pre></td>\
                  <td>{action}</td>\
                  </tr>",
                 status_class = status_class,
                 name = item.name,
+                device_name = html_escape(&item.device_name),
                 status_text = status_text,
                 preview = html_escape(&item.diff_preview),
                 action = action,
@@ -156,7 +175,7 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
 <body>
 <h1>Config Diff Overview</h1>
 <table>
-<tr><th>Device</th><th>Status</th><th>Preview</th><th>Action</th></tr>
+<tr><th>Serial</th><th>Logical Device</th><th>Status</th><th>Preview</th><th>Action</th></tr>
 {rows}
 </table>
 </body>
@@ -213,8 +232,20 @@ pub async fn diff_detail(
 
     let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
 
+    // Look up logical device name for this serial
+    let device_name = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .and_then(|base| {
+            let map = serial_to_device_names(&load_all_device_configs(base));
+            map.get(&name).map(|names| names.join(", "))
+        })
+        .unwrap_or_else(|| "-".to_string());
+
     let view = DiffDetailView {
         name: name.clone(),
+        device_name,
         delta: delta.clone(),
         target_config: target_config.clone(),
         current_config: current_config.clone(),
@@ -231,6 +262,7 @@ fn render_diff_detail(view: &DiffDetailView) -> String {
 <head><meta charset="UTF-8"><title>Config Diff: {name}</title></head>
 <body>
 <h1>Config Diff: {name}</h1>
+<p>Logical Device: <strong>{device_name}</strong></p>
 <h2>Delta (commands to apply)</h2>
 <pre>{delta}</pre>
 <h2>Target Config</h2>
@@ -240,6 +272,7 @@ fn render_diff_detail(view: &DiffDetailView) -> String {
 </body>
 </html>"#,
         name = view.name,
+        device_name = html_escape(&view.device_name),
         delta = html_escape(&view.delta),
         target = html_escape(&view.target_config),
         current = html_escape(&view.current_config),

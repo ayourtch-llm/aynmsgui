@@ -44,9 +44,13 @@ pub struct AppConfig {
     #[arg(long, default_value = "data/cfggen", env = "AYNMSGUI_CFGGEN_BASE_DIR")]
     pub cfggen_base_dir: Option<PathBuf>,
 
-    /// Path to target configs
+    /// Path to target configs (serial-keyed)
     #[arg(long, default_value = "data/target-configs", env = "AYNMSGUI_TARGET_CONFIGS_PATH")]
     pub target_configs_path: Option<PathBuf>,
+
+    /// Path to target configs preview (device-name-keyed, always written)
+    #[arg(long, default_value = "data/target-configs-preview", env = "AYNMSGUI_TARGET_CONFIGS_PREVIEW_PATH")]
+    pub target_configs_preview_path: Option<PathBuf>,
 
     /// Path to current configs
     #[arg(long, default_value = "data/current-configs", env = "AYNMSGUI_CURRENT_CONFIGS_PATH")]
@@ -116,6 +120,7 @@ mod tests {
         assert_eq!(cfg.address_map_refresh_secs, 60);
         assert_eq!(cfg.cfggen_base_dir, Some(PathBuf::from("data/cfggen")));
         assert_eq!(cfg.target_configs_path, Some(PathBuf::from("data/target-configs")));
+        assert_eq!(cfg.target_configs_preview_path, Some(PathBuf::from("data/target-configs-preview")));
         assert_eq!(cfg.current_configs_path, Some(PathBuf::from("data/current-configs")));
         assert_eq!(cfg.target_branch, "main");
         assert_eq!(cfg.current_branch, "main");

@@ -91,6 +91,9 @@ fn ensure_data_dirs(cfg: &AppConfig) {
     if let Some(ref dir) = cfg.target_configs_path {
         ensure_git_repo(dir, &cfg.target_branch);
     }
+    if let Some(ref dir) = cfg.target_configs_preview_path {
+        ensure_dir(dir);
+    }
     if let Some(ref dir) = cfg.current_configs_path {
         ensure_git_repo(dir, &cfg.current_branch);
     }

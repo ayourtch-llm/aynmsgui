@@ -8,6 +8,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
 use crate::state::AppState;
 
 // ── Form struct ───────────────────────────────────────────────────────────────
@@ -71,6 +72,17 @@ pub async fn apply_page(
 
     let default_username = state.config.device_username.as_deref().unwrap_or("").to_string();
 
+    // Look up logical device name for this serial
+    let logical_device = state
+        .config
+        .cfggen_base_dir
+        .as_ref()
+        .and_then(|base| {
+            let map = serial_to_device_names(&load_all_device_configs(base));
+            map.get(&name).map(|names| names.join(", "))
+        })
+        .unwrap_or_else(|| "-".to_string());
+
     // Look up device IP from known_devices
     let devices = state.known_devices.read().await;
     let device = devices.get(&name);
@@ -87,6 +99,7 @@ pub async fn apply_page(
 <h1>Apply Config: {name}</h1>
 <table>
 <tr><th>Serial</th><td>{name}</td></tr>
+<tr><th>Logical Device</th><td>{logical_device}</td></tr>
 <tr><th>Hostname</th><td>{hostname}</td></tr>
 <tr><th>IP</th><td>{ip}</td></tr>
 </table>
@@ -108,6 +121,7 @@ pub async fn apply_page(
 </body>
 </html>"#,
         name = html_escape(&name),
+        logical_device = html_escape(&logical_device),
         hostname = html_escape(device_hostname),
         ip = html_escape(device_ip),
         delta = html_escape(&delta),

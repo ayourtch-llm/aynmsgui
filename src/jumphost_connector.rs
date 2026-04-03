@@ -84,9 +84,10 @@ Start
   ^.*[\$#>]\s* -> Send "{ssh_command}" WaitPassword
 
 WaitPassword
-  ^[Pp]assword:\s* -> Send ${{DevicePassword}} WaitPrompt
-  ^.*# -> Send "terminal length 0" TermLen
-  ^.*> -> Send "terminal length 0" TermLen
+  ^.*[Pp]assword:\s* -> Send ${{DevicePassword}} WaitPrompt
+  ^.*refused.* -> Error "connection refused"
+  ^.*denied.* -> Error "permission denied"
+  ^.*[Nn]o route.* -> Error "no route to host"
 
 WaitPrompt
   ^.*# -> Send "terminal length 0" TermLen

@@ -1381,10 +1381,11 @@ pub async fn start_upgrade(
         let password = creds.password.clone();
 
         // Connect via SSH (direct or via jumphost)
+        // Read timeout must be long enough for image transfer + verify /md5
         let mut conn = match upgrade_state.connect_to_device(
             &upgrade_ip,
             std::time::Duration::from_secs(15),
-            std::time::Duration::from_secs(120),
+            std::time::Duration::from_secs(1200), // 20 minutes for large image transfers
         )
         .await
         {
@@ -1405,7 +1406,7 @@ pub async fn start_upgrade(
             expected_md5: None,
             delete_existing: false,
             cleanup_after: true,
-            timeout_secs: 600,
+            timeout_secs: 1200, // 20 minutes for large image transfers
         };
 
         let progress_cb = SseProgressCallback { tx: tx.clone() };

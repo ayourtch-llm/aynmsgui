@@ -124,8 +124,9 @@ li.dropdown { display: inline-block; position: relative; }
 
 /* MAIN CONTENT */
 .main {
-    padding: 16px 24px;
+    padding: 24px 24px;
     max-width: 1400px;
+    margin: 0 auto;
 }
 
 /* TABLE STYLES */

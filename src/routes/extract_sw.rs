@@ -93,114 +93,138 @@ pub async fn extract_sw_device(
     let ip = form.ip.trim().to_string();
     info!(ip = %ip, "Starting software image extraction via SSH");
 
-    // Connect to device (direct or via jumphost)
-    let mut conn = match state.connect_to_device(
-        &ip,
-        std::time::Duration::from_secs(15),
-        std::time::Duration::from_secs(120), // longer timeout for image transfer
-    )
-    .await
-    {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(ip = %ip, error = %e, "SSH connection failed");
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Connection Failed</h1>
-<p>Could not connect to <strong>{ip}</strong> via SSH:</p>
-<pre>{error}</pre>
-<a href="/extract-sw">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response();
-        }
-    };
+    // Create SSE operation
+    let (op_id, tx) = state.operations.write().await.create_operation();
+    info!(ip = %ip, op_id = %op_id, "Extraction operation created");
 
-    // Run show version to register device in seen_assets before extraction
-    if let Ok(sv_output) = conn.run_cmd("show version").await {
-        if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(&sv_output) {
-            if !sv_info.serial_number.is_empty() {
-                state.register_seen_asset(
-                    &sv_info.serial_number,
-                    &ip,
-                    if sv_info.hostname.is_empty() { None } else { Some(sv_info.hostname.as_str()) },
-                    if sv_info.platform.is_empty() { None } else { Some(sv_info.platform.as_str()) },
-                    if sv_info.software_image.is_empty() { None } else { Some(sv_info.software_image.as_str()) },
-                ).await;
+    // Spawn the extraction in a background task
+    let ops = state.operations.clone();
+    let extract_state = state.clone();
+    let spawned_op_id = op_id.clone();
+    let extract_ip = ip.clone();
+
+    tokio::spawn(async move {
+        let send = |event_type: &str, data: &str| {
+            let _ = tx.send(crate::sse::SseEvent {
+                event_type: event_type.to_string(),
+                data: data.to_string(),
+            });
+        };
+
+        send("progress", &format!("Connecting to {}...", extract_ip));
+
+        // Connect to device
+        let mut conn = match extract_state.connect_to_device(
+            &extract_ip,
+            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(120),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                send("error", &format!("SSH connection failed: {}", e));
+                ops.write().await.remove_operation(&spawned_op_id);
+                return;
+            }
+        };
+
+        send("progress", "Connected. Running show version...");
+
+        // Register device in seen_assets
+        if let Ok(sv_output) = conn.run_cmd("show version").await {
+            if let Some(sv_info) = aycfggen::show_parsers::parse_show_version(&sv_output) {
+                if !sv_info.serial_number.is_empty() {
+                    extract_state.register_seen_asset(
+                        &sv_info.serial_number,
+                        &extract_ip,
+                        if sv_info.hostname.is_empty() { None } else { Some(sv_info.hostname.as_str()) },
+                        if sv_info.platform.is_empty() { None } else { Some(sv_info.platform.as_str()) },
+                        if sv_info.software_image.is_empty() { None } else { Some(sv_info.software_image.as_str()) },
+                    ).await;
+                    send("progress", &format!("Device: {} ({})", sv_info.hostname, sv_info.serial_number));
+                }
             }
         }
-    }
 
-    // Use ayiosupdate-lib extract_from_device with ExtractionKind::Image
-    let request = ayiosupdate_lib::extract::ExtractionRequest {
-        kind: ayiosupdate_lib::extract::ExtractionKind::Image,
-        output_dir: sw_dir.clone(),
-        timeout_secs: 600, // 10 minutes for large images
-    };
+        send("progress", "Starting software image extraction (this may take several minutes)...");
 
-    let result = ayiosupdate_lib::extract::extract_from_device(
-        &mut conn,
-        &ip,
-        request,
-    )
-    .await;
+        let request = ayiosupdate_lib::extract::ExtractionRequest {
+            kind: ayiosupdate_lib::extract::ExtractionKind::Image,
+            output_dir: sw_dir,
+            timeout_secs: 600,
+        };
 
-    let _ = conn.disconnect().await;
+        let result = ayiosupdate_lib::extract::extract_from_device(
+            &mut conn,
+            &extract_ip,
+            request,
+        )
+        .await;
 
-    match result {
-        Ok(extraction) => {
-            info!(
-                ip = %ip,
-                filename = %extraction.filename,
-                bytes = extraction.bytes,
-                md5 = ?extraction.md5,
-                "Software image extracted successfully"
-            );
+        let _ = conn.disconnect().await;
 
-            let size_mb = extraction.bytes as f64 / 1_048_576.0;
-            let md5_display = extraction.md5.as_deref().unwrap_or("not verified");
-
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Software Image Extracted</h1>
-<p>Successfully extracted software image from <strong>{ip}</strong>.</p>
-<table>
-<tr><th>Filename</th><td>{filename}</td></tr>
-<tr><th>Size</th><td>{size:.1} MB ({bytes} bytes)</td></tr>
-<tr><th>MD5</th><td><code>{md5}</code></td></tr>
-<tr><th>Saved to</th><td><code>{path}</code></td></tr>
-</table>
-<p><a href="/software">Back to Software</a> | <a href="/extract-sw">Extract Another</a> | <a href="/">Dashboard</a></p>
-</body></html>"#,
-                ip = html_escape(&ip),
-                filename = html_escape(&extraction.filename),
-                size = size_mb,
-                bytes = extraction.bytes,
-                md5 = html_escape(md5_display),
-                path = html_escape(&extraction.local_path.display().to_string()),
-            ))
-            .into_response()
+        match result {
+            Ok(extraction) => {
+                let size_mb = extraction.bytes as f64 / 1_048_576.0;
+                let md5_display = extraction.md5.as_deref().unwrap_or("not verified");
+                info!(
+                    ip = %extract_ip,
+                    filename = %extraction.filename,
+                    bytes = extraction.bytes,
+                    md5 = ?extraction.md5,
+                    "Software image extracted successfully"
+                );
+                send("complete", &format!(
+                    "Extracted {} ({:.1} MB, MD5: {})",
+                    extraction.filename, size_mb, md5_display
+                ));
+            }
+            Err(e) => {
+                warn!(ip = %extract_ip, error = %e, "Software image extraction failed");
+                send("error", &format!("Extraction failed: {}", e));
+            }
         }
-        Err(e) => {
-            warn!(ip = %ip, error = %e, "Software image extraction failed");
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Extraction Failed</h1>
-<p>Could not extract software image from <strong>{ip}</strong>:</p>
-<pre>{error}</pre>
-<a href="/extract-sw">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response()
-        }
-    }
+
+        ops.write().await.remove_operation(&spawned_op_id);
+    });
+
+    // Return page with SSE progress
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Extracting Software Image</title></head>
+<body>
+<h1>Extracting Software Image</h1>
+<p>Device: <strong>{ip}</strong></p>
+<p>Operation ID: {op_id}</p>
+<div id="progress"></div>
+<script>
+const evtSource = new EventSource("/software/upgrade/{op_id}/progress");
+const div = document.getElementById("progress");
+evtSource.addEventListener("progress", function(e) {{
+    div.innerHTML += "<p>" + e.data + "</p>";
+}});
+evtSource.addEventListener("complete", function(e) {{
+    div.innerHTML += "<p style='color:green'><strong>" + e.data + "</strong></p>";
+    div.innerHTML += "<p><a href='/software'>Back to Software</a> | <a href='/extract-sw'>Extract Another</a></p>";
+    evtSource.close();
+}});
+evtSource.addEventListener("error", function(e) {{
+    if (e.data) {{
+        div.innerHTML += "<p style='color:red'><strong>Error:</strong> " + e.data + "</p>";
+    }}
+    div.innerHTML += "<p><a href='/extract-sw'>Try again</a></p>";
+    evtSource.close();
+}});
+</script>
+<p><a href="/extract-sw">Back</a> | <a href="/">Dashboard</a></p>
+</body>
+</html>"#,
+        ip = html_escape(&ip),
+        op_id = html_escape(&op_id),
+    ))
+    .into_response()
 }
 
 fn html_escape(s: &str) -> String {

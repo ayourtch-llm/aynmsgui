@@ -91,6 +91,75 @@ impl AppState {
         }
     }
 
+    /// Refresh seen assets from the on-disk file and callhome URLs.
+    /// Merges new/updated entries into the in-memory map without losing
+    /// entries that only exist in memory.
+    pub async fn refresh_seen_assets(&self) {
+        let mut assets = self.seen_assets.write().await;
+
+        // 1. Re-read from local file
+        let path = &self.config.seen_assets_file;
+        if path.exists() {
+            match std::fs::read_to_string(path) {
+                Ok(content) if !content.trim().is_empty() => {
+                    match serde_json::from_str::<Vec<aycallhome::Device>>(&content) {
+                        Ok(devices) => {
+                            for d in devices {
+                                let entry = assets.entry(d.serial.clone()).or_insert(d.clone());
+                                // Update fields if the file version is newer
+                                // (compare last_seen timestamps)
+                                let file_latest = d.last_seen_ipv6.or(d.last_seen_ipv4);
+                                let mem_latest = entry.last_seen_ipv6.or(entry.last_seen_ipv4);
+                                if file_latest > mem_latest {
+                                    *entry = d;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(path = %path.display(), error = %e, "Failed to parse seen assets file during refresh");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // 2. Merge from callhome URLs
+        for url in &self.config.address_map_urls {
+            match aycallhome::try_load_devices_ordered(url).await {
+                Ok(devices) => {
+                    tracing::debug!(url = %url, count = devices.len(), "Refreshed devices from address map");
+                    for (serial, d) in devices {
+                        let entry = assets.entry(serial).or_insert(d.clone());
+                        let remote_latest = d.last_seen_ipv6.or(d.last_seen_ipv4);
+                        let mem_latest = entry.last_seen_ipv6.or(entry.last_seen_ipv4);
+                        if remote_latest > mem_latest {
+                            *entry = d;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(url = %url, error = %e, "Failed to refresh devices from address map");
+                }
+            }
+        }
+
+        // 3. Persist merged result back to disk
+        let devices_vec: Vec<&aycallhome::Device> = assets.values().collect();
+        match serde_json::to_string_pretty(&devices_vec) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, &json) {
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to save seen assets after refresh");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to serialize seen assets after refresh");
+            }
+        }
+
+        tracing::debug!(count = assets.len(), "Seen assets refresh complete");
+    }
+
     pub fn new(
         config: AppConfig,
         htpasswd: HtpasswdStore,

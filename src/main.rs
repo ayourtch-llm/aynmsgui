@@ -197,6 +197,18 @@ async fn main() {
         }
     });
 
+    // Background seen-assets refresh (file + callhome URLs)
+    let refresh_state = state.clone();
+    let refresh_secs = cfg.address_map_refresh_secs;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(refresh_secs));
+        interval.tick().await; // skip the immediate first tick (already loaded above)
+        loop {
+            interval.tick().await;
+            refresh_state.refresh_seen_assets().await;
+        }
+    });
+
     let app = routes::build_router(state);
 
     let bind_addr = format!("{}:{}", cfg.listen_addr, cfg.port);

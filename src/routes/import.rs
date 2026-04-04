@@ -153,6 +153,17 @@ pub async fn import_device(
     // Collect chassis MAC from show diag (fallback for IOS routers without base MAC in show version)
     let show_diag = conn.run_cmd("show diag").await.unwrap_or_default();
     let fallback_mac = ayciam::parse_chassis_mac(&show_diag);
+    if fallback_mac.is_none() && !show_diag.is_empty() {
+        // Log MAC-related lines to help debug
+        let mac_lines: Vec<&str> = show_diag.lines()
+            .filter(|l| l.to_lowercase().contains("mac"))
+            .collect();
+        if mac_lines.is_empty() {
+            info!(ip = %ip, "show diag has no MAC lines ({} bytes total)", show_diag.len());
+        } else {
+            info!(ip = %ip, mac_lines = ?mac_lines, "show diag MAC lines (none matched 'chassis mac')");
+        }
+    }
 
     let _ = conn.disconnect().await;
 

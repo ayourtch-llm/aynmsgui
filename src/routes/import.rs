@@ -421,10 +421,25 @@ pub async fn import_device(
                             }
                         }
 
-                        results_html.push_str(&format!(
-                            "<p style='color:green'>Config extracted for logical device <strong>{}</strong>.</p>",
-                            html_escape(&logical_name),
-                        ));
+                        // Compile the extracted config to produce target .cfg files
+                        match crate::routes::devices::compile_device_config(&logical_name, base_dir, &state.config) {
+                            Ok(()) => {
+                                info!(name = %logical_name, "Config compiled after import");
+                                results_html.push_str(&format!(
+                                    "<p style='color:green'>Config extracted and compiled for logical device <strong>{}</strong>.</p>",
+                                    html_escape(&logical_name),
+                                ));
+                            }
+                            Err(e) => {
+                                warn!(name = %logical_name, error = %e, "Config compilation failed after import");
+                                results_html.push_str(&format!(
+                                    "<p style='color:green'>Config extracted for logical device <strong>{}</strong>.</p>\
+                                     <p style='color:orange'>Compilation failed: {}</p>",
+                                    html_escape(&logical_name),
+                                    html_escape(&format!("{e}")),
+                                ));
+                            }
+                        }
                     }
                     Ok(Err(e)) => {
                         warn!(logical_name = %logical_name, error = %e, "Extraction pipeline failed");

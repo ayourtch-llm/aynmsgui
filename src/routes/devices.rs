@@ -431,7 +431,7 @@ fn render_device_detail(d: &DeviceDetailView, available_services: &[String], ava
 }
 
 /// Compile a logical device config into a .cfg file in target-configs.
-fn compile_device_config(
+pub(crate) fn compile_device_config(
     device_name: &str,
     cfggen_base: &std::path::Path,
     app_config: &crate::config::AppConfig,

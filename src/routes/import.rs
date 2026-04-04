@@ -150,11 +150,19 @@ pub async fn import_device(
     let show_running_raw = conn.run_cmd("show running-config").await.unwrap_or_default();
     // Strip noise lines (Load for five secs, Time source, Building configuration, etc.)
     let show_running = aycfgapply::normalize::normalize_config(&show_running_raw);
+    // Collect chassis MAC from show diag (fallback for IOS routers without base MAC in show version)
+    let show_diag = conn.run_cmd("show diag").await.unwrap_or_default();
+    let fallback_mac = ayciam::parse_chassis_mac(&show_diag);
 
     let _ = conn.disconnect().await;
 
     // 3. Parse outputs into DeviceMetadata
-    let metadata_list = match ayciam::build_metadata(&show_version, &show_inventory, "ANY") {
+    let metadata_list = match ayciam::build_metadata_with_fallback_mac(
+        &show_version,
+        &show_inventory,
+        "ANY",
+        fallback_mac.as_deref(),
+    ) {
         Ok(list) => list,
         Err(e) => {
             warn!(ip = %ip, error = %e, "Failed to parse device metadata");

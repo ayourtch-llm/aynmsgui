@@ -150,18 +150,18 @@ pub async fn import_device(
     let show_running_raw = conn.run_cmd("show running-config").await.unwrap_or_default();
     // Strip noise lines (Load for five secs, Time source, Building configuration, etc.)
     let show_running = aycfgapply::normalize::normalize_config(&show_running_raw);
-    // Collect chassis MAC from show diag (fallback for IOS routers without base MAC in show version)
+    // Collect chassis MAC (fallback for IOS routers without base MAC in show version)
+    // Try "show diag" first, then "show diag all eeprom detail | inc Chassis MAC"
     let show_diag = conn.run_cmd("show diag").await.unwrap_or_default();
-    let fallback_mac = ayciam::parse_chassis_mac(&show_diag);
-    if fallback_mac.is_none() && !show_diag.is_empty() {
-        // Log MAC-related lines to help debug
-        let mac_lines: Vec<&str> = show_diag.lines()
-            .filter(|l| l.to_lowercase().contains("mac"))
-            .collect();
-        if mac_lines.is_empty() {
-            info!(ip = %ip, "show diag has no MAC lines ({} bytes total)", show_diag.len());
-        } else {
-            info!(ip = %ip, mac_lines = ?mac_lines, "show diag MAC lines (none matched 'chassis mac')");
+    let mut fallback_mac = ayciam::parse_chassis_mac(&show_diag);
+    if fallback_mac.is_none() {
+        let show_diag_eeprom = conn.run_cmd("show diag all eeprom detail | inc Chassis MAC").await.unwrap_or_default();
+        fallback_mac = ayciam::parse_chassis_mac(&show_diag_eeprom);
+        if fallback_mac.is_none() && !show_diag_eeprom.trim().is_empty() {
+            info!(ip = %ip, output = %show_diag_eeprom.trim(), "show diag eeprom output (no MAC parsed)");
+        }
+        if fallback_mac.is_none() {
+            info!(ip = %ip, "No chassis MAC found in show diag or show diag eeprom");
         }
     }
 

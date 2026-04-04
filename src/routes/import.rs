@@ -150,6 +150,19 @@ pub async fn import_device(
     let show_running_raw = conn.run_cmd("show running-config").await.unwrap_or_default();
     // Strip noise lines (Load for five secs, Time source, Building configuration, etc.)
     let show_running = aycfgapply::normalize::normalize_config(&show_running_raw);
+
+    // Log discovered interfaces for debugging
+    let iface_entries = aycfggen::show_parsers::parse_show_ip_interface_brief(&show_ip_brief);
+    let iface_names: Vec<&str> = iface_entries.iter().map(|e| e.name.as_str()).collect();
+    info!(ip = %ip, count = iface_entries.len(), interfaces = ?iface_names,
+        "Discovered interfaces from show ip interface brief");
+    let running_ifaces: Vec<&str> = show_running.lines()
+        .filter(|l| l.starts_with("interface "))
+        .map(|l| l.strip_prefix("interface ").unwrap_or(l).trim())
+        .collect();
+    info!(ip = %ip, count = running_ifaces.len(), interfaces = ?running_ifaces,
+        "Interfaces in running-config");
+
     // Collect chassis MAC (fallback for IOS routers without base MAC in show version)
     // Try "show diag" first, then "show diag all eeprom detail | inc Chassis MAC"
     let show_diag = conn.run_cmd("show diag").await.unwrap_or_default();

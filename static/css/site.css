@@ -151,6 +151,16 @@ li.dropdown { display: inline-block; position: relative; }
     box-sizing: border-box;
 }
 
+/* Page heading on full-bleed list pages. Same horizontal alignment as
+ * the .quicksearch / .table-scroll content below it: left edge at
+ * viewport_x + 24, right edge symmetric, so heading + toolbar + table
+ * all line up on wide monitors. */
+.list-page-heading {
+    width: calc(100vw - 96px);
+    margin-left: calc(50% - 50vw + 24px);
+    box-sizing: border-box;
+}
+
 /* TABLE STYLES */
 table {
     border-style: none;

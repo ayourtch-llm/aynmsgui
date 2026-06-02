@@ -31,6 +31,10 @@
   // localStorage key for persisted node positions. Per-origin → effectively
   // per-browser-per-user-account; explicitly cleared by the Reset button.
   var POS_KEY = "aynmsgui:topology:positions";
+  // Cached last topology response. Restored on page load so the graph is
+  // visible (with everything initially marked stale) before the first
+  // /topology/json fetch completes.
+  var DATA_KEY = "aynmsgui:topology:lastData";
 
   function loadSavedPositions() {
     try {
@@ -59,6 +63,23 @@
     try {
       localStorage.removeItem(POS_KEY);
     } catch (e) {}
+  }
+
+  function loadCachedData() {
+    try {
+      var raw = localStorage.getItem(DATA_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveCachedData(data) {
+    try {
+      localStorage.setItem(DATA_KEY, JSON.stringify(data));
+    } catch (e) {
+      console.warn("topology: failed to cache data", e);
+    }
   }
 
   // Apply saved positions to nodes that have them. Returns true if EVERY
@@ -981,8 +1002,15 @@
     fetch("/topology/json")
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        lastData = data;
-        render();
+        saveCachedData(data);
+        if (cy && lastData) {
+          // We pre-rendered from the cache and marked things stale; now
+          // merge the fresh data so seen items lose their stale class.
+          mergeUpdate(data);
+        } else {
+          lastData = data;
+          render();
+        }
       })
       .catch(function (e) {
         status.textContent = "load failed: " + e;
@@ -1058,7 +1086,19 @@
     sorted.forEach(function (el) {
       var existing = cy.getElementById(el.data.id);
       if (existing.length === 0) {
-        cy.add(el);
+        // For new compound children, place at parent's current position so
+        // the parent's centroid (= avg of children) doesn't get dragged
+        // toward (0,0) by an unpositioned new child. alignChildrenInColumns
+        // re-spreads them properly after the add pass.
+        var addArgs = el;
+        if (el.group === "nodes" && el.data.parent) {
+          var parentNode = cy.getElementById(el.data.parent);
+          if (parentNode.length) {
+            var pp = parentNode.position();
+            addArgs = Object.assign({}, el, { position: { x: pp.x, y: pp.y } });
+          }
+        }
+        cy.add(addArgs);
         if (el.group === "nodes" && el.classes && el.classes.indexOf("device") >= 0) {
           addedDeviceIds.push(el.data.id);
         }
@@ -1116,7 +1156,7 @@
   function autoLoad() {
     fetch("/topology/json")
       .then(function (r) { return r.json(); })
-      .then(function (data) { mergeUpdate(data); })
+      .then(function (data) { saveCachedData(data); mergeUpdate(data); })
       .catch(function (e) { console.warn("topology auto-refresh failed:", e); });
   }
 
@@ -1157,6 +1197,17 @@
       else stopAutoRefresh();
     });
     document.getElementById("topology-search").addEventListener("input", applySearch);
+
+    // Render whatever we have cached first, with everything stale; the
+    // first /topology/json fetch will then un-stale the items it sees.
+    var cached = loadCachedData();
+    if (cached) {
+      lastData = cached;
+      render();
+      if (cy) cy.elements().addClass("stale");
+      var status = document.getElementById("topology-status");
+      if (status) status.textContent += " (cached, awaiting refresh…)";
+    }
     load();
     if (autoToggle.checked) startAutoRefresh();
   };

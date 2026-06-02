@@ -101,6 +101,84 @@
     try { localStorage.removeItem(DATA_KEY); } catch (e) {}
   }
 
+  // Remove a single id from the shadow (kind = "nodes" or "edges").
+  function removeFromShadow(kind, id) {
+    try {
+      var raw = localStorage.getItem(DATA_KEY);
+      if (!raw) return;
+      var s = JSON.parse(raw);
+      if (s[kind] && s[kind][id] !== undefined) {
+        delete s[kind][id];
+        localStorage.setItem(DATA_KEY, JSON.stringify(s));
+      }
+    } catch (e) {}
+  }
+
+  // Drop every shadow edge whose source or target is this device id.
+  // (Shadow edges store device ids in source/target, not port ids.)
+  function purgeShadowEdgesForDevice(deviceId) {
+    try {
+      var raw = localStorage.getItem(DATA_KEY);
+      if (!raw) return;
+      var s = JSON.parse(raw);
+      if (!s.edges) return;
+      var changed = false;
+      Object.keys(s.edges).forEach(function (eid) {
+        var e = s.edges[eid];
+        if (e.source === deviceId || e.target === deviceId) {
+          delete s.edges[eid];
+          changed = true;
+        }
+      });
+      if (changed) localStorage.setItem(DATA_KEY, JSON.stringify(s));
+    } catch (e) {}
+  }
+
+  // Remove a stale device from the live graph + the shadow. cy.remove()
+  // cascades to child ports + connected edges automatically; the shadow
+  // edges are scrubbed separately so they don't come back on reload.
+  function removeStaleDevice(id) {
+    var node = cy.getElementById(id);
+    if (node.length) node.remove();
+    removeFromShadow("nodes", id);
+    purgeShadowEdgesForDevice(id);
+    var panel = document.getElementById("topology-detail");
+    if (panel) panel.innerHTML = "<em>Click a node for details.</em>";
+    saveCurrentPositions();
+  }
+
+  // Remove a stale cy edge + every shadow edge that maps to the same
+  // canonical port-pair. The cy edge id is "pair:<endpointA>|<endpointB>"
+  // where each endpoint is "<device>::<port>"; shadow edges store device
+  // ids + sport/tport separately, so we have to translate.
+  function removeStaleEdge(cyEdgeId) {
+    var edge = cy.getElementById(cyEdgeId);
+    if (edge.length) edge.remove();
+    if (cyEdgeId.indexOf("pair:") !== 0) return;
+    var pair = cyEdgeId.slice("pair:".length).split("|");
+    if (pair.length !== 2) return;
+    var a = pair[0].split("::"), b = pair[1].split("::");
+    if (a.length !== 2 || b.length !== 2) return;
+    var devA = a[0], portA = a[1], devB = b[0], portB = b[1];
+    try {
+      var raw = localStorage.getItem(DATA_KEY);
+      if (!raw) return;
+      var s = JSON.parse(raw);
+      if (!s.edges) return;
+      var changed = false;
+      Object.keys(s.edges).forEach(function (eid) {
+        var e = s.edges[eid];
+        var match =
+          (e.source === devA && e.target === devB && e.sport === portA && e.tport === portB) ||
+          (e.source === devB && e.target === devA && e.sport === portB && e.tport === portA);
+        if (match) { delete s.edges[eid]; changed = true; }
+      });
+      if (changed) localStorage.setItem(DATA_KEY, JSON.stringify(s));
+    } catch (e) {}
+    var panel = document.getElementById("topology-detail");
+    if (panel) panel.innerHTML = "<em>Click a node for details.</em>";
+  }
+
   // Reconstruct a /topology/json-shape object from the accumulated shadow.
   // The merge path then treats it just like a fresh server response —
   // every item gets a .stale class on initial render, fresh fetches
@@ -173,11 +251,23 @@
 
   function renderDetail(node) {
     var d = nodeDeviceData(node);
+    var deviceId = d.id;
+    var deviceNode = cy.getElementById(deviceId);
+    var isStale = deviceNode.length && deviceNode.hasClass("stale");
+
     var parts = [];
     parts.push('<h3 style="margin:0 0 8px 0;">' + escapeHtml(d.label || d.id) + "</h3>");
+    parts.push("<p>");
     if (d.managed) {
-      parts.push('<p><span style="background:#e0e0e0; padding:1px 6px; border-radius:3px;">managed</span></p>');
+      parts.push('<span style="background:#e0e0e0; padding:1px 6px; border-radius:3px;">managed</span> ');
     }
+    if (isStale) {
+      parts.push('<span style="background:#f5f5f5; color:#aaa; padding:1px 6px; border-radius:3px; border:1px solid #ddd;">stale</span> ');
+      parts.push('<button data-action="remove-stale-device" data-id="' + escapeHtml(deviceId) +
+        '" style="margin-left:8px;">Remove from history</button>');
+    }
+    parts.push("</p>");
+
     var fields = [
       ["Description", d.description],
       ["Role", d.role],
@@ -197,8 +287,7 @@
       parts.push('<p style="margin-top:10px;"><a href="' + escapeHtml(d.href) + '">Open device page →</a></p>');
     }
     // List adjacencies for this device (collect from all its child ports).
-    var deviceId = d.id;
-    var deviceNode = cy.getElementById(deviceId);
+    // Stale adjacencies get a gray "(stale)" badge + a tiny remove button.
     var edges = deviceNode.children().connectedEdges();
     if (edges.length) {
       parts.push("<h4 style='margin:12px 0 4px 0;'>Adjacencies (" + edges.length + ")</h4><ul style='padding-left:18px; margin:0;'>");
@@ -208,13 +297,31 @@
         var localPort = ed._sourceDevice === deviceId ? ed.sport : ed.tport;
         var remotePort = ed._sourceDevice === deviceId ? ed.tport : ed.sport;
         var other = ed._sourceDevice === deviceId ? ed._targetDevice : ed._sourceDevice;
-        parts.push("<li><code>" + escapeHtml(localPort || "?") + "</code> " +
+        var edgeStale = e.hasClass("stale");
+        var liStyle = edgeStale ? ' style="color:#888;"' : "";
+        var staleBadge = edgeStale
+          ? ' <span style="color:#aaa; font-style:italic;">(stale)</span>' +
+            ' <button data-action="remove-stale-edge" data-id="' + escapeHtml(ed.id) +
+            '" title="Remove this adjacency from history" style="padding:0 6px;">×</button>'
+          : "";
+        parts.push("<li" + liStyle + "><code>" + escapeHtml(localPort || "?") + "</code> " +
           direction + " <strong>" + escapeHtml(other) + "</strong>" +
-          " <code>" + escapeHtml(remotePort || "?") + "</code></li>");
+          " <code>" + escapeHtml(remotePort || "?") + "</code>" + staleBadge + "</li>");
       });
       parts.push("</ul>");
     }
-    document.getElementById("topology-detail").innerHTML = parts.join("");
+    var panel = document.getElementById("topology-detail");
+    panel.innerHTML = parts.join("");
+    // Wire delete buttons via event delegation. Re-rendered every call,
+    // so no need to track listeners across invocations.
+    panel.querySelectorAll("[data-action]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var act = btn.getAttribute("data-action");
+        var id = btn.getAttribute("data-id");
+        if (act === "remove-stale-device") removeStaleDevice(id);
+        else if (act === "remove-stale-edge") removeStaleEdge(id);
+      });
+    });
   }
 
   function buildElements(data, managedOnly) {

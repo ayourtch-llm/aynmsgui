@@ -240,7 +240,19 @@ pub async fn retrieve_configs(
     //    The freshness filter is also applied here (not only in the form)
     //    so a stale POST body — e.g. a tab left open for hours — can't
     //    sneak past the UI.
-    let cutoff = freshness_cutoff(state.config.retrieve_max_age_secs);
+    //
+    //    Exception: when `force=1` is in the form (set by the per-row
+    //    Retrieve button on the diff overview), the operator has
+    //    explicitly asked for this device, so skip the freshness gate.
+    let force = form
+        .get("force")
+        .map(|v| matches!(v.as_str(), "1" | "on" | "true"))
+        .unwrap_or(false);
+    let cutoff = if force {
+        None
+    } else {
+        freshness_cutoff(state.config.retrieve_max_age_secs)
+    };
     let seen = state.seen_assets.read().await;
     let device_map: IndexMap<String, aycfgapply::devices::Device> = seen
         .iter()

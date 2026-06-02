@@ -243,9 +243,11 @@
           width: 2,
         },
       },
-      // ── Peer-port highlight (added on selection of a port) ───────────
+      // ── Selected / peer-port highlight ───────────────────────────────
+      // Use the same blue treatment for both the actively-selected port
+      // and any peers added by the .highlighted class on selection.
       {
-        selector: "node.port.highlighted",
+        selector: "node.port:selected, node.port.highlighted",
         style: {
           "border-color": "#2980b9",
           "border-width": 2,

@@ -35,6 +35,12 @@
   // visible (with everything initially marked stale) before the first
   // /topology/json fetch completes.
   var DATA_KEY = "aynmsgui:topology:lastData";
+  // Set of device ids whose stale state has been acknowledged by the
+  // operator. Managed devices that are stale AND not in this set render
+  // red ("alarming"); once acknowledged they fade to normal gray. The
+  // ack is cleared automatically when a device comes back online so the
+  // next disconnect re-alarms.
+  var ACK_KEY = "aynmsgui:topology:ackedStale";
 
   function loadSavedPositions() {
     try {
@@ -99,6 +105,51 @@
 
   function clearShadow() {
     try { localStorage.removeItem(DATA_KEY); } catch (e) {}
+  }
+
+  function loadAcks() {
+    try {
+      var raw = localStorage.getItem(ACK_KEY);
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function saveAcks(set) {
+    try {
+      localStorage.setItem(ACK_KEY, JSON.stringify(Array.from(set)));
+    } catch (e) {}
+  }
+  function ackDevice(id) {
+    var s = loadAcks();
+    s.add(id);
+    saveAcks(s);
+    var node = cy.getElementById(id);
+    if (node.length) node.removeClass("stale-unacked");
+    // Re-render the detail panel to drop the Acknowledge button.
+    if (node.length) renderDetail(node);
+  }
+  function unackDevice(id) {
+    var s = loadAcks();
+    if (s.has(id)) {
+      s.delete(id);
+      saveAcks(s);
+    }
+  }
+
+  // Walk every device marked .stale and refresh its .stale-unacked
+  // marker based on whether it's managed and whether the operator has
+  // already acknowledged it. Call after any mass stale-tagging pass.
+  function refreshStaleAlarms() {
+    if (!cy) return;
+    var acks = loadAcks();
+    cy.nodes(".device").forEach(function (d) {
+      var stale = d.hasClass("stale");
+      var managed = !!d.data("managed");
+      var alarmed = stale && managed && !acks.has(d.id());
+      if (alarmed) d.addClass("stale-unacked");
+      else d.removeClass("stale-unacked");
+    });
   }
 
   // Remove a single id from the shadow (kind = "nodes" or "edges").
@@ -254,6 +305,7 @@
     var deviceId = d.id;
     var deviceNode = cy.getElementById(deviceId);
     var isStale = deviceNode.length && deviceNode.hasClass("stale");
+    var isAlarmed = deviceNode.length && deviceNode.hasClass("stale-unacked");
 
     var parts = [];
     parts.push('<h3 style="margin:0 0 8px 0;">' + escapeHtml(d.label || d.id) + "</h3>");
@@ -261,8 +313,16 @@
     if (d.managed) {
       parts.push('<span style="background:#e0e0e0; padding:1px 6px; border-radius:3px;">managed</span> ');
     }
-    if (isStale) {
+    if (isAlarmed) {
+      parts.push('<span style="background:#c0392b; color:white; padding:1px 6px; border-radius:3px;">OFFLINE — unacknowledged</span> ');
+    } else if (isStale) {
       parts.push('<span style="background:#f5f5f5; color:#aaa; padding:1px 6px; border-radius:3px; border:1px solid #ddd;">stale</span> ');
+    }
+    if (isAlarmed) {
+      parts.push('<button data-action="ack-stale-device" data-id="' + escapeHtml(deviceId) +
+        '" style="margin-left:8px;">Acknowledge offline</button>');
+    }
+    if (isStale) {
       parts.push('<button data-action="remove-stale-device" data-id="' + escapeHtml(deviceId) +
         '" style="margin-left:8px;">Remove from history</button>');
     }
@@ -320,6 +380,7 @@
         var id = btn.getAttribute("data-id");
         if (act === "remove-stale-device") removeStaleDevice(id);
         else if (act === "remove-stale-edge") removeStaleEdge(id);
+        else if (act === "ack-stale-device") ackDevice(id);
       });
     });
   }
@@ -559,6 +620,21 @@
           "background-opacity": 0.6,
           "border-color": "#cfcfcf",
           color: "#aaa",
+        },
+      },
+      // Managed devices that have gone stale and the operator has NOT
+      // yet acknowledged the outage. Render alarming red so it stands
+      // out against the gray sea of stale APs/cameras. Acknowledging
+      // (via the detail-panel button) drops this class and the device
+      // settles into normal pale gray.
+      {
+        selector: "node.device.stale-unacked",
+        style: {
+          "background-color": "#ffe5e5",
+          "background-opacity": 1,
+          "border-color": "#c0392b",
+          "border-width": 2,
+          color: "#c0392b",
         },
       },
       {
@@ -1271,7 +1347,13 @@
             existing.classes(el.classes);
           }
         }
+        // Coming back from stale → also clear any prior acknowledgement
+        // so the next disconnect re-alarms.
+        if (existing.hasClass("stale")) {
+          unackDevice(existing.id());
+        }
         existing.removeClass("stale");
+        existing.removeClass("stale-unacked");
       }
     });
 
@@ -1321,6 +1403,8 @@
     }
     // Reapply the search dim in case new elements arrived.
     applySearch();
+    // Update which stale devices should be alarming (managed + not acked).
+    refreshStaleAlarms();
   }
 
   function autoLoad() {
@@ -1352,6 +1436,7 @@
   function clearHistory() {
     if (!confirm("Clear all cached topology history? This wipes every gray (stale) device and edge from the local cache.")) return;
     clearShadow();
+    try { localStorage.removeItem(ACK_KEY); } catch (e) {}
     if (cy) {
       cy.elements(".stale").remove();
       saveCurrentPositions();
@@ -1389,7 +1474,10 @@
     if (cached) {
       lastData = cached;
       render();
-      if (cy) cy.elements().addClass("stale");
+      if (cy) {
+        cy.elements().addClass("stale");
+        refreshStaleAlarms();
+      }
       var status = document.getElementById("topology-status");
       if (status) status.textContent += " (cached, awaiting refresh…)";
     }

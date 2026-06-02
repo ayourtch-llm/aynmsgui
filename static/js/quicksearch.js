@@ -39,8 +39,24 @@
         return compileQuery(el.value);
       });
 
+      // Detach the tbody before mutating row.style.display per row.
+      // In an unparented subtree the browser doesn't lay out / repaint, so
+      // hundreds of style writes collapse into a single reflow on reattach
+      // instead of one reflow per row.
+      var tbody = table.tBodies.length ? table.tBodies[0] : null;
+      var rows;
+      var parent = null;
+      var nextSibling = null;
+      if (tbody) {
+        parent = tbody.parentNode;
+        nextSibling = tbody.nextSibling;
+        parent.removeChild(tbody);
+        rows = tbody.rows;
+      } else {
+        rows = table.rows;
+      }
+
       var matches = 0;
-      var rows = table.tBodies.length ? table.tBodies[0].rows : table.rows;
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         if (row.className === headerClass) continue;
@@ -59,6 +75,11 @@
           row.style.display = "none";
         }
       }
+
+      if (tbody) {
+        parent.insertBefore(tbody, nextSibling);
+      }
+
       if (counter) counter.textContent = "Total matches: " + matches;
     };
   }

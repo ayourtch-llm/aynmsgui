@@ -552,13 +552,14 @@
           "background-opacity": 1,
           "border-color": "#888",
           "border-width": 1,
-          // Label = device name + (when present) description on a second
+          // Label = device name (+ IP next to it) + description on a second
           // line. text-wrap: wrap is required for the embedded "\n" to
           // render; text-max-width keeps long descriptions from blowing
           // out the node width.
           label: function (n) {
             var d = n.data();
-            return d.description ? (d.label + "\n" + d.description) : d.label;
+            var head = d.ip ? (d.label + " (" + d.ip + ")") : d.label;
+            return d.description ? (head + "\n" + d.description) : head;
           },
           "text-wrap": "wrap",
           "text-max-width": "180px",

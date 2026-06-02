@@ -21,6 +21,11 @@ pub struct DiffOverviewItem {
     pub diff_preview: String,
     pub status_class: &'static str,
     pub status_text: &'static str,
+    /// True if the matching seen_assets entry's last_seen is older than the
+    /// freshness window (or missing entirely). The per-row Retrieve button
+    /// is disabled in this case — same reason /retrieve disables it.
+    pub retrieve_disabled: bool,
+    pub retrieve_reason: String,
 }
 
 #[derive(Serialize)]
@@ -87,6 +92,16 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         .map(|base| serial_to_device_names(&load_all_device_configs(base)))
         .unwrap_or_default();
 
+    // Per-row Retrieve button needs to know whether the device is fresh.
+    // Compute the freshness cutoff once and snapshot seen_assets.
+    let max_age_secs = state.config.retrieve_max_age_secs;
+    let freshness_cutoff = if max_age_secs == 0 {
+        None
+    } else {
+        Some(chrono::Utc::now() - chrono::Duration::seconds(max_age_secs as i64))
+    };
+    let seen = state.seen_assets.read().await;
+
     let mut items: Vec<DiffOverviewItem> = Vec::new();
 
     for entry in entries {
@@ -149,6 +164,20 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             .map(|names| names.join(", "))
             .unwrap_or_else(|| "-".to_string());
 
+        // Retrieve-button gating: disabled if the device isn't in
+        // seen_assets at all, or its last_seen is past the freshness
+        // cutoff. The reason is surfaced as a button tooltip.
+        let (retrieve_disabled, retrieve_reason) = match seen.get(&name) {
+            None => (true, "Not in seen-assets — never reported".to_string()),
+            Some(d) => match (freshness_cutoff, d.last_seen()) {
+                (Some(cutoff), Some(ts)) if ts < cutoff => {
+                    (true, format!("Last seen {} (older than freshness window)", ts.to_rfc3339()))
+                }
+                (Some(_), None) => (true, "No last-seen timestamp on this device".to_string()),
+                _ => (false, format!("SSH to this device and commit its current config")),
+            },
+        };
+
         items.push(DiffOverviewItem {
             name,
             device_name,
@@ -156,8 +185,11 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             diff_preview,
             status_class: if has_diff { "has-diff" } else { "no-diff" },
             status_text: if has_diff { "Changes" } else { "No changes" },
+            retrieve_disabled,
+            retrieve_reason,
         });
     }
+    drop(seen);
 
     // Sort by name for stable output
     items.sort_by(|a, b| a.name.cmp(&b.name));

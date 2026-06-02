@@ -21,15 +21,22 @@ struct SeenDeviceRow {
     hostname: String,
     ipv4: String,
     ipv6: String,
+    /// True if this device is older than the freshness window. Rendered
+    /// with a pale-red background and a disabled checkbox in the form.
+    is_stale: bool,
+    /// "12 min ago" / "never" — surfaced as a tooltip on stale rows so the
+    /// operator can see exactly how stale.
+    last_seen_label: String,
 }
 
 #[derive(Serialize)]
 struct RetrieveFormCtx {
     devices: Vec<SeenDeviceRow>,
+    /// Total devices listed (== seen_assets.len()).
     device_count: usize,
-    /// Total seen_assets before the freshness filter — shown so the operator
-    /// can tell when devices are being hidden because they're stale.
-    total_count: usize,
+    /// How many of `device_count` are too stale to retrieve from. Surfaced
+    /// in the header so the operator can see the breakdown at a glance.
+    stale_count: usize,
     max_age_label: String,
     quicksearch_table_id: &'static str,
 }
@@ -102,6 +109,23 @@ fn is_fresh(
     }
 }
 
+fn format_last_seen(
+    ts: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let Some(ts) = ts else { return "never".to_string(); };
+    let secs = (now - ts).num_seconds().max(0);
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
+    }
+}
+
 fn format_max_age(max_age_secs: u64) -> String {
     if max_age_secs == 0 {
         return "any age".to_string();
@@ -117,26 +141,31 @@ fn format_max_age(max_age_secs: u64) -> String {
 
 pub async fn retrieve_page(State(state): State<AppState>) -> Response {
     let devices = state.seen_assets.read().await;
-    let total_count = devices.len();
     let max_age_secs = state.config.retrieve_max_age_secs;
     let cutoff = freshness_cutoff(max_age_secs);
+    let now = chrono::Utc::now();
     let rows: Vec<SeenDeviceRow> = devices
         .iter()
-        .filter(|(_, d)| is_fresh(d, cutoff))
-        .map(|(serial, d)| SeenDeviceRow {
-            serial: serial.clone(),
-            hostname: d.hostname.clone().unwrap_or_else(|| "-".to_string()),
-            ipv4: d.last_ipv4.clone().unwrap_or_else(|| "-".to_string()),
-            ipv6: d.last_ipv6.clone().unwrap_or_else(|| "-".to_string()),
+        .map(|(serial, d)| {
+            let fresh = is_fresh(d, cutoff);
+            SeenDeviceRow {
+                serial: serial.clone(),
+                hostname: d.hostname.clone().unwrap_or_else(|| "-".to_string()),
+                ipv4: d.last_ipv4.clone().unwrap_or_else(|| "-".to_string()),
+                ipv6: d.last_ipv6.clone().unwrap_or_else(|| "-".to_string()),
+                is_stale: !fresh,
+                last_seen_label: format_last_seen(d.last_seen(), now),
+            }
         })
         .collect();
     drop(devices);
 
     let device_count = rows.len();
+    let stale_count = rows.iter().filter(|r| r.is_stale).count();
     let ctx = RetrieveFormCtx {
         devices: rows,
         device_count,
-        total_count,
+        stale_count,
         max_age_label: format_max_age(max_age_secs),
         quicksearch_table_id: "retrieveTable",
     };
@@ -238,21 +267,9 @@ pub async fn retrieve_configs(
     // 5. Convert seen assets to aycfgapply::devices::Device, filtering to
     //    only the serials the operator checked AND that are fresh enough.
     //    The freshness filter is also applied here (not only in the form)
-    //    so a stale POST body — e.g. a tab left open for hours — can't
-    //    sneak past the UI.
-    //
-    //    Exception: when `force=1` is in the form (set by the per-row
-    //    Retrieve button on the diff overview), the operator has
-    //    explicitly asked for this device, so skip the freshness gate.
-    let force = form
-        .get("force")
-        .map(|v| matches!(v.as_str(), "1" | "on" | "true"))
-        .unwrap_or(false);
-    let cutoff = if force {
-        None
-    } else {
-        freshness_cutoff(state.config.retrieve_max_age_secs)
-    };
+    //    as defense in depth: stale rows have disabled checkboxes in the
+    //    UI, so this branch should never reject anything in normal use.
+    let cutoff = freshness_cutoff(state.config.retrieve_max_age_secs);
     let seen = state.seen_assets.read().await;
     let device_map: IndexMap<String, aycfgapply::devices::Device> = seen
         .iter()
@@ -478,10 +495,10 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // ── Test 4: GET hides devices last-seen beyond the freshness window ───────
+    // ── Test 4: GET marks stale rows (.retrieve-stale) with disabled checkbox ─
 
     #[tokio::test]
-    async fn test_retrieve_freshness_filter_hides_stale_devices() {
+    async fn test_retrieve_freshness_filter_disables_stale_devices() {
         let now = chrono::Utc::now();
         let mut seen = IndexMap::new();
         seen.insert(
@@ -526,9 +543,20 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let body = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(body.contains("fresh-host"), "FRESH device should be shown");
-        assert!(!body.contains("stale-host"), "STALE device should be hidden");
-        assert!(body.contains("1 of 2"), "header should show filtered count");
+        assert!(body.contains("fresh-host"), "FRESH device should be listed");
+        assert!(body.contains("stale-host"), "STALE device should also be listed (not hidden)");
+        // The stale row's checkbox is disabled and the row carries the
+        // retrieve-stale class.
+        assert!(
+            body.contains("name=\"select_STALE\" value=\"on\" class=\"retrieve-row-check\" disabled"),
+            "STALE checkbox should be disabled, got: {body}"
+        );
+        assert!(
+            !body.contains("name=\"select_FRESH\" value=\"on\" class=\"retrieve-row-check\" disabled"),
+            "FRESH checkbox should NOT be disabled"
+        );
+        assert!(body.contains("retrieve-stale"), "stale row should have the .retrieve-stale class");
+        assert!(body.contains("1 too stale"), "header should show stale count");
     }
 
     // ── Test 5: POST with a selection that matches no seen asset is rejected ──

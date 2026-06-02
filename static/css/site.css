@@ -203,6 +203,19 @@ tbody tr:hover { background-color: #e3edf7; }
 tr.has-diff td:nth-child(3) { color: #c0392b; font-weight: 600; }
 tr.no-diff td:nth-child(3) { color: #95a5a6; }
 
+/* /retrieve: rows for devices not seen within the freshness window. The
+ * checkbox is `disabled` so they can't be picked; the pale-red tint
+ * signals "this is here for context but you can't act on it." Win over
+ * the zebra rules with !important so even-row striping doesn't replace
+ * the tint. */
+tr.retrieve-stale,
+tr.retrieve-stale:nth-child(odd),
+tr.retrieve-stale:nth-child(even) {
+    background-color: #fbe9e7 !important;
+    color: #999;
+}
+tr.retrieve-stale:hover { background-color: #f8d7d2 !important; }
+
 td.center, th.center { text-align: center; }
 
 /* CARDS (dashboard) */

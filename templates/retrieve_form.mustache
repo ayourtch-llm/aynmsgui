@@ -1,7 +1,7 @@
 <h1 class="list-page-heading">Retrieve Current Configs</h1>
 <p>SSH into the selected assets and commit their running configs to the current-configs repo.</p>
 <form method="POST" action="/retrieve">
-<h2>Recently seen assets — {{max_age_label}} ({{device_count}} of {{total_count}})</h2>
+<h2>Seen Assets ({{device_count}} total · {{stale_count}} too stale to retrieve — older than {{max_age_label}})</h2>
 <p>
   <a href="#" id="retrieve-select-all">Select all</a> ·
   <a href="#" id="retrieve-select-none">Select none</a>
@@ -13,8 +13,8 @@
 <thead><tr><th></th><th>Serial</th><th>Hostname</th><th>IPv4</th><th>IPv6</th></tr></thead>
 <tbody>
 {{#devices}}
-<tr>
-  <td><input type="checkbox" name="select_{{serial}}" value="on" class="retrieve-row-check"></td>
+<tr class="{{#is_stale}}retrieve-stale{{/is_stale}}" title="Last seen: {{last_seen_label}}">
+  <td><input type="checkbox" name="select_{{serial}}" value="on" class="retrieve-row-check"{{#is_stale}} disabled{{/is_stale}}></td>
   <td>{{serial}}</td><td>{{hostname}}</td><td>{{ipv4}}</td><td>{{ipv6}}</td>
 </tr>
 {{/devices}}
@@ -33,7 +33,7 @@
     document.querySelectorAll("#{{quicksearch_table_id}} tbody tr").forEach(function (tr) {
       if (tr.style.display === "none") return;
       var cb = tr.querySelector(".retrieve-row-check");
-      if (cb) cb.checked = checked;
+      if (cb && !cb.disabled) cb.checked = checked;
     });
   };
   var sa = document.getElementById("retrieve-select-all");

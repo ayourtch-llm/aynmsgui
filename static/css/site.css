@@ -313,6 +313,16 @@ details summary { cursor: pointer; font-weight: 600; color: #1a5276; }
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
+    /* Match the full-viewport break-out of .table-scroll so the toolbar
+     * border-box lines up with the table below it on wide screens.
+     * .table-scroll spans 100vw with 24px inner padding, so its table
+     * content sits at viewport_left+24 to viewport_right-24 — that's
+     * 100vw-48 wide, plus we need another 24 left margin to clear the
+     * .table-scroll's left padding. Total inset: 96px (24 each side, x2).
+     * (margin-left longhand must come AFTER the shorthand above to win.) */
+    width: calc(100vw - 96px);
+    margin-left: calc(50% - 50vw + 24px);
+    box-sizing: border-box;
 }
 .quicksearch input { padding: 3px 6px; margin: 0; }
 .quicksearch #totalMatches { margin-left: auto; color: #666; font-size: 0.9em; }

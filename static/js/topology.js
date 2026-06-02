@@ -141,22 +141,46 @@
       });
     });
 
-    // 4. Emit edges (port → port).
+    // 4. Dedupe CDP adjacencies by the unordered port pair.
+    //    CDP usually reports both directions (A→B and B→A) for the same
+    //    physical link; merge them into a single edge with a "bidirectional"
+    //    class so we render one line with arrows on both ends instead of
+    //    two parallel arrows.
+    var pairs = new Map();
     data.edges.forEach(function (e) {
       if (!visibleDevices.has(e.source) || !visibleDevices.has(e.target)) return;
+      var src = portChildId(e.source, e.sport);
+      var tgt = portChildId(e.target, e.tport);
+      var key = src < tgt ? src + "|" + tgt : tgt + "|" + src;
+      var existing = pairs.get(key);
+      if (existing) {
+        existing.bidirectional = true;
+        return;
+      }
+      pairs.set(key, {
+        id: e.id,
+        source: src,
+        target: tgt,
+        sport: e.sport,
+        tport: e.tport,
+        sourceDevice: e.source,
+        targetDevice: e.target,
+        bidirectional: false,
+      });
+    });
+    pairs.forEach(function (p) {
       els.push({
         group: "edges",
         data: {
-          id: e.id,
-          source: portChildId(e.source, e.sport),
-          target: portChildId(e.target, e.tport),
-          sport: e.sport,
-          tport: e.tport,
-          // Stash device-level endpoints so renderDetail can compute
-          // direction without walking the port hierarchy.
-          _sourceDevice: e.source,
-          _targetDevice: e.target,
+          id: p.id,
+          source: p.source,
+          target: p.target,
+          sport: p.sport,
+          tport: p.tport,
+          _sourceDevice: p.sourceDevice,
+          _targetDevice: p.targetDevice,
         },
+        classes: p.bidirectional ? "bidirectional" : "",
       });
     });
 
@@ -254,13 +278,26 @@
           "background-color": "#eaf3fb",
         },
       },
+      // Bidirectional adjacencies (CDP reported both A→B and B→A) get an
+      // arrow at the source end too, so a single line shows mutual
+      // visibility instead of two parallel arrows.
+      {
+        selector: "edge.bidirectional",
+        style: {
+          "source-arrow-shape": "triangle",
+          "source-arrow-color": "#666",
+        },
+      },
       // Thicken the connecting edge(s) of the selected port too — the
-      // line color matches the highlighted ports at each end.
+      // line color matches the highlighted ports at each end. Setting
+      // source-arrow-color too covers the bidirectional case (otherwise
+      // the source arrow would inherit gray from .bidirectional).
       {
         selector: "edge.highlighted",
         style: {
           "line-color": "#2980b9",
           "target-arrow-color": "#2980b9",
+          "source-arrow-color": "#2980b9",
           width: 3,
         },
       },
@@ -350,15 +387,25 @@
     cy.fit(undefined, 30);
   }
 
-  function highlightPeersOf(node) {
-    // Clear previous highlights on both nodes and edges.
+  // Highlight the relevant siblings of `el`:
+  //   port  → its connected edges + the peer port(s) at the other end
+  //   edge  → the source + target ports + the edge itself
+  // Previous highlights are cleared first.
+  function highlightSiblings(el) {
     cy.elements(".highlighted").removeClass("highlighted");
-    if (!node.hasClass("port")) return;
-    node.connectedEdges().forEach(function (edge) {
-      var peer = edge.source().id() === node.id() ? edge.target() : edge.source();
-      peer.addClass("highlighted");
-      edge.addClass("highlighted");
-    });
+    if (el.isEdge()) {
+      el.addClass("highlighted");
+      el.source().addClass("highlighted");
+      el.target().addClass("highlighted");
+      return;
+    }
+    if (el.isNode() && el.hasClass("port")) {
+      el.connectedEdges().forEach(function (edge) {
+        var peer = edge.source().id() === el.id() ? edge.target() : edge.source();
+        peer.addClass("highlighted");
+        edge.addClass("highlighted");
+      });
+    }
   }
 
   function render() {
@@ -373,13 +420,18 @@
       style: styles(),
       wheelSensitivity: 0.2,
     });
-    // Detail panel update + peer highlight on selection (fires on click
-    // and on drag-start, so the highlight is visible while moving a port).
+    // Detail panel update + sibling highlight on selection. Fires on
+    // click (and on drag-start for nodes), so the highlight is visible
+    // while moving a port. Edge selection lights up its two endpoint
+    // ports as well — reciprocal of the port-select case.
     cy.on("select", "node", function (evt) {
       renderDetail(evt.target);
-      highlightPeersOf(evt.target);
+      highlightSiblings(evt.target);
     });
-    cy.on("unselect", "node", function () {
+    cy.on("select", "edge", function (evt) {
+      highlightSiblings(evt.target);
+    });
+    cy.on("unselect", function () {
       cy.elements(".highlighted").removeClass("highlighted");
     });
     fitAndLayout();

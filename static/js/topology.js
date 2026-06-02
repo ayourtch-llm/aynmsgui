@@ -18,6 +18,16 @@
   var cy = null;
   var lastData = null;
 
+  // Tracks the most recent ctrl+right-click target for BFS-cycle selection.
+  // Repeating ctrl+right-click on the same device expands the BFS radius;
+  // clicking a different device resets to depth 1.
+  var bfsState = null; // { rootId, depth }
+
+  // Flag set during programmatic multi-select so the per-node "select"
+  // handler doesn't fire renderDetail / highlightSiblings for every
+  // element in the selection set.
+  var suppressSelectHandler = false;
+
   // localStorage key for persisted node positions. Per-origin → effectively
   // per-browser-per-user-account; explicitly cleared by the Reset button.
   var POS_KEY = "aynmsgui:topology:positions";
@@ -696,6 +706,73 @@
     cy.fit(undefined, 30);
   }
 
+  // Walk the device graph breadth-first starting from `rootId`, returning
+  // the set of device ids reachable in <= `depth` hops (inclusive of root).
+  function bfsDevices(rootId, depth) {
+    var visited = new Set([rootId]);
+    var frontier = [rootId];
+    for (var d = 0; d < depth; d++) {
+      var next = [];
+      frontier.forEach(function (id) {
+        var node = cy.getElementById(id);
+        if (!node.length) return;
+        node.children().connectedEdges().forEach(function (e) {
+          var sParent = e.source().isChild() ? e.source().parent().first().id() : e.source().id();
+          var tParent = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
+          var other = sParent === id ? tParent : sParent;
+          if (other !== id && !visited.has(other)) {
+            visited.add(other);
+            next.push(other);
+          }
+        });
+      });
+      frontier = next;
+      if (!frontier.length) break;
+    }
+    return visited;
+  }
+
+  // ctrl+right-click on a device cycles a BFS-radius selection:
+  //   1st click  → select clicked device + its 1-hop neighbors
+  //   2nd click  → extend to 2-hop
+  //   ...
+  // Clicking a different device resets back to depth 1. Cytoscape's
+  // built-in multi-select drag then moves the whole set together when
+  // the user grabs any one of them.
+  function handleCtrlRightClick(evt) {
+    var orig = evt.originalEvent;
+    if (!orig || !(orig.ctrlKey || orig.metaKey)) return;
+    orig.preventDefault();
+
+    var device = evt.target;
+    if (!device.hasClass("device")) return;
+    var id = device.id();
+
+    if (!bfsState || bfsState.rootId !== id) {
+      bfsState = { rootId: id, depth: 1 };
+    } else {
+      bfsState.depth += 1;
+    }
+
+    var set = bfsDevices(id, bfsState.depth);
+
+    suppressSelectHandler = true;
+    cy.elements().unselect();
+    set.forEach(function (devId) {
+      var n = cy.getElementById(devId);
+      if (n.length) n.select();
+    });
+    suppressSelectHandler = false;
+
+    // Update the status line so the user sees the current radius + count.
+    var status = document.getElementById("topology-status");
+    if (status) {
+      status.textContent =
+        "Selected " + set.size + " devices (root=" + id +
+        ", depth=" + bfsState.depth + ")";
+    }
+  }
+
   // Highlight the relevant siblings of `el`:
   //   port  → its connected edges + the peer port(s) at the other end
   //   edge  → the source + target ports + the edge itself
@@ -733,16 +810,22 @@
     // click (and on drag-start for nodes), so the highlight is visible
     // while moving a port. Edge selection lights up its two endpoint
     // ports as well — reciprocal of the port-select case.
+    // suppressSelectHandler is flipped on during programmatic multi-
+    // select (ctrl+right-click BFS) so the panel doesn't redraw per node.
     cy.on("select", "node", function (evt) {
+      if (suppressSelectHandler) return;
       renderDetail(evt.target);
       highlightSiblings(evt.target);
     });
     cy.on("select", "edge", function (evt) {
+      if (suppressSelectHandler) return;
       highlightSiblings(evt.target);
     });
     cy.on("unselect", function () {
       cy.elements(".highlighted").removeClass("highlighted");
     });
+    // ctrl+right-click on a device cycles a BFS-radius selection.
+    cy.on("cxttap", "node", handleCtrlRightClick);
     // Persist positions after the user moves any node.
     cy.on("dragfree", "node", saveCurrentPositions);
 

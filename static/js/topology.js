@@ -1091,50 +1091,48 @@
     return neighbors;
   }
 
-  // Walk the device graph breadth-first starting from `rootId`, returning
-  // the set of device ids reachable in <= `depth` hops (inclusive of root).
-  function bfsDevices(rootId, depth) {
-    var visited = new Set([rootId]);
-    var frontier = [rootId];
-    for (var d = 0; d < depth; d++) {
-      var next = [];
-      frontier.forEach(function (id) {
+  // Build the selection set for a given BFS step. Each "depth" has two
+  // sub-steps so that multi-attached devices come in as a separate hop
+  // from the leaves that hang off the current frontier:
+  //
+  //   includeMulti=false → at the final depth, only leaves (degree 1)
+  //                        whose only neighbor is in the selection are
+  //                        added; multi-attached frontier devices stay out.
+  //   includeMulti=true  → at the final depth, the full frontier is added
+  //                        (both leaves and multi-attached).
+  //
+  // All depths *before* the final one are full hops, so the selection
+  // grows monotonically across cycle clicks.
+  function bfsDevices(rootId, depth, includeMulti) {
+    var set = new Set([rootId]);
+    for (var d = 1; d <= depth; d++) {
+      var leavesOnly = (d === depth) && !includeMulti;
+      var frontier = new Set();
+      set.forEach(function (id) {
         deviceNeighborsOf(id).forEach(function (other) {
-          if (!visited.has(other)) {
-            visited.add(other);
-            next.push(other);
-          }
+          if (!set.has(other)) frontier.add(other);
         });
       });
-      frontier = next;
-      if (!frontier.length) break;
+      frontier.forEach(function (other) {
+        if (leavesOnly && deviceNeighborsOf(other).size !== 1) return;
+        set.add(other);
+      });
     }
-    return visited;
+    return set;
   }
 
-  // For every unselected device that's a "leaf" (degree 1) whose single
-  // neighbor is in the selection, pull it in too. Lets the user grab a
-  // hub and have its dangling endpoints (APs, cameras, codecs with one
-  // CDP adjacency) come along for the ride — without having to bump the
-  // BFS depth and accidentally swallow whole other hubs.
-  function augmentSelectionWithLeaves(selected) {
-    cy.nodes(".device").forEach(function (d) {
-      var id = d.id();
-      if (selected.has(id)) return;
-      var ns = deviceNeighborsOf(id);
-      if (ns.size !== 1) return;
-      var only = ns.values().next().value;
-      if (selected.has(only)) selected.add(id);
-    });
-  }
-
-  // ctrl+right-click on a device cycles a BFS-radius selection:
-  //   1st click  → select clicked device + its 1-hop neighbors
-  //   2nd click  → extend to 2-hop
+  // ctrl+right-click on a device cycles a BFS-radius selection. Each
+  // depth has two sub-steps so multi-attached devices come in as their
+  // own hop:
+  //   1st click  → root + 1-hop leaves (devices with only one connection
+  //                that lands on the root)
+  //   2nd click  → + 1-hop multi-attached devices
+  //   3rd click  → + 2-hop leaves (leaves hanging off the new ring)
+  //   4th click  → + 2-hop multi-attached
   //   ...
-  // Clicking a different device resets back to depth 1. Cytoscape's
-  // built-in multi-select drag then moves the whole set together when
-  // the user grabs any one of them.
+  // Clicking a different device resets back to the first sub-step.
+  // Cytoscape's built-in multi-select drag then moves the whole set
+  // together when the user grabs any one of them.
   function handleCtrlRightClick(evt) {
     var orig = evt.originalEvent;
     if (!orig || !(orig.ctrlKey || orig.metaKey)) return;
@@ -1145,17 +1143,15 @@
     var id = device.id();
 
     if (!bfsState || bfsState.rootId !== id) {
-      bfsState = { rootId: id, depth: 1 };
+      bfsState = { rootId: id, depth: 1, includeMulti: false };
+    } else if (!bfsState.includeMulti) {
+      bfsState.includeMulti = true;
     } else {
       bfsState.depth += 1;
+      bfsState.includeMulti = false;
     }
 
-    var set = bfsDevices(id, bfsState.depth);
-    // Pull in any "single-connected" devices hanging off the BFS frontier
-    // (APs/cameras/codecs with a single CDP adjacency to one of the
-    // already-selected devices). They naturally belong to the moving
-    // cluster without requiring another depth step.
-    augmentSelectionWithLeaves(set);
+    var set = bfsDevices(id, bfsState.depth, bfsState.includeMulti);
 
     suppressSelectHandler = true;
     cy.elements().unselect();
@@ -1168,9 +1164,10 @@
     // Update the status line so the user sees the current radius + count.
     var status = document.getElementById("topology-status");
     if (status) {
+      var phase = bfsState.includeMulti ? "+multi" : "leaves";
       status.textContent =
         "Selected " + set.size + " devices (root=" + id +
-        ", depth=" + bfsState.depth + ")";
+        ", depth=" + bfsState.depth + " " + phase + ")";
     }
   }
 

@@ -262,7 +262,16 @@
           "background-opacity": 1,
           "border-color": "#888",
           "border-width": 1,
-          label: "data(label)",
+          // Label = device name + (when present) description on a second
+          // line. text-wrap: wrap is required for the embedded "\n" to
+          // render; text-max-width keeps long descriptions from blowing
+          // out the node width.
+          label: function (n) {
+            var d = n.data();
+            return d.description ? (d.label + "\n" + d.description) : d.label;
+          },
+          "text-wrap": "wrap",
+          "text-max-width": "180px",
           "text-valign": "top",
           "text-halign": "center",
           "text-margin-y": -4,

@@ -1256,34 +1256,104 @@
     });
   }
 
-  // Animated "fly-out then fly-in" zoom: pull the camera back, then zoom
-  // into the chosen device. Also selects it and shows its detail panel.
+  // Quick side-to-side pan oscillation — a "no-no" headshake. Used when
+  // the user re-selects the device that's already in focus.
+  function shakeViewport() {
+    if (!cy) return;
+    var origin = { x: cy.pan().x, y: cy.pan().y };
+    var amp = 18;
+    var step = 70;
+    var steps = [
+      { x: origin.x - amp,     y: origin.y },
+      { x: origin.x + amp,     y: origin.y },
+      { x: origin.x - amp * 0.6, y: origin.y },
+      { x: origin.x + amp * 0.6, y: origin.y },
+      { x: origin.x,           y: origin.y },
+    ];
+    var i = 0;
+    function next() {
+      if (i >= steps.length) return;
+      var to = steps[i++];
+      cy.animate({ pan: to }, { duration: step, easing: "ease-in-out", complete: next });
+    }
+    next();
+  }
+
+  // Animated "fly-out then fly-in" zoom: first frame both the current view
+  // and the target so the eye can track the trip, hold briefly at the apex,
+  // then dive in on the target. If the target is already on screen, skip
+  // the fly-out and just zoom in.
   function flyToDevice(id) {
     if (!cy) return;
     var node = cy.getElementById(id);
     if (!node || !node.length) return;
-    var targetPos = node.position();
-    var currentZoom = cy.zoom();
-    var outZoom = Math.max(0.15, currentZoom * 0.5);
-    var inZoom = Math.max(1.0, currentZoom);
-    cy.animate(
-      { zoom: outZoom, center: { eles: node } },
-      {
-        duration: 250,
-        easing: "ease-out",
-        complete: function () {
-          cy.animate(
-            { zoom: inZoom,
-              pan: { x: cy.width() / 2 - targetPos.x * inZoom,
-                     y: cy.height() / 2 - targetPos.y * inZoom } },
-            { duration: 350, easing: "ease-in-out" }
-          );
-        },
-      }
-    );
+    // "No-no" shake if the user re-clicks the device that's already focused.
+    var alreadyFocused = node.selected();
     cy.elements(":selected").unselect();
     node.select();
     renderDetail(node);
+    if (alreadyFocused) {
+      shakeViewport();
+      return;
+    }
+
+    var targetPos = node.position();
+    var nodeBb = node.boundingBox();
+    var ext = cy.extent();
+    var currentZoom = cy.zoom();
+    var inZoom = Math.max(1.0, currentZoom);
+
+    var panToTarget = function (z) {
+      return { x: cy.width() / 2 - targetPos.x * z,
+               y: cy.height() / 2 - targetPos.y * z };
+    };
+
+    // If the target is already comfortably on screen, skip the fly-out
+    // and just zoom in — the round trip would feel jarring for nearby hops.
+    var onScreen = nodeBb.x1 >= ext.x1 && nodeBb.x2 <= ext.x2 &&
+                   nodeBb.y1 >= ext.y1 && nodeBb.y2 <= ext.y2;
+    if (onScreen) {
+      cy.animate({ zoom: inZoom, pan: panToTarget(inZoom) },
+                 { duration: 400, easing: "ease-in-out" });
+      return;
+    }
+
+    // Frame the union of (current viewport, target node) so the eye can
+    // see both the starting view and the destination in the same shot.
+    var bbX1 = Math.min(ext.x1, nodeBb.x1);
+    var bbY1 = Math.min(ext.y1, nodeBb.y1);
+    var bbX2 = Math.max(ext.x2, nodeBb.x2);
+    var bbY2 = Math.max(ext.y2, nodeBb.y2);
+    var bbW = Math.max(1, bbX2 - bbX1);
+    var bbH = Math.max(1, bbY2 - bbY1);
+    var bbCx = (bbX1 + bbX2) / 2;
+    var bbCy = (bbY1 + bbY2) / 2;
+    var pad = 60;
+    var fitZoom = Math.min(
+      (cy.width() - 2 * pad) / bbW,
+      (cy.height() - 2 * pad) / bbH
+    );
+    // Never zoom *in* during the fly-out phase — the apex should always be
+    // wider than the start. Clamp to a sane floor too.
+    fitZoom = Math.max(0.1, Math.min(fitZoom, currentZoom * 0.95));
+
+    cy.animate(
+      { zoom: fitZoom,
+        pan: { x: cy.width() / 2 - bbCx * fitZoom,
+               y: cy.height() / 2 - bbCy * fitZoom } },
+      {
+        duration: 450,
+        easing: "ease-out",
+        complete: function () {
+          // Hang at the apex for a beat so the eye locks onto the target,
+          // then dive in.
+          setTimeout(function () {
+            cy.animate({ zoom: inZoom, pan: panToTarget(inZoom) },
+                       { duration: 500, easing: "ease-in-out" });
+          }, 280);
+        },
+      }
+    );
   }
 
   function clearSearch() {

@@ -67,9 +67,12 @@
     document.getElementById("topology-detail").innerHTML = parts.join("");
   }
 
-  function buildElements(data) {
+  function buildElements(data, managedOnly) {
     var els = [];
+    var visibleIds = new Set();
     data.nodes.forEach(function (n) {
+      if (managedOnly && !n.managed) return;
+      visibleIds.add(n.id);
       els.push({
         group: "nodes",
         data: n,
@@ -77,6 +80,7 @@
       });
     });
     data.edges.forEach(function (e) {
+      if (!visibleIds.has(e.source) || !visibleIds.has(e.target)) return;
       els.push({ group: "edges", data: e });
     });
     return els;
@@ -94,9 +98,9 @@
           label: "data(label)",
           "text-valign": "center",
           "text-halign": "center",
-          "font-size": "10px",
+          "font-size": "12px",
           "font-family": "Verdana, sans-serif",
-          padding: "6px",
+          padding: "8px",
           width: "label",
           height: "label",
         },
@@ -139,18 +143,69 @@
     ];
   }
 
+  function layoutOptions(name) {
+    var common = { name: name, animate: false, fit: true, padding: 40 };
+    if (name === "cose") {
+      return Object.assign(common, {
+        idealEdgeLength: 220,
+        nodeRepulsion: 12000,
+        edgeElasticity: 50,
+        nestingFactor: 1.2,
+        gravity: 0.15,
+        numIter: 2500,
+        initialTemp: 250,
+        randomize: false,
+      });
+    }
+    if (name === "concentric") {
+      return Object.assign(common, {
+        concentric: function (node) { return node.degree(); },
+        levelWidth: function () { return 1; },
+        minNodeSpacing: 30,
+      });
+    }
+    if (name === "grid") return Object.assign(common, { spacingFactor: 1.6 });
+    if (name === "circle") return Object.assign(common, { spacingFactor: 1.6 });
+    if (name === "breadthfirst") {
+      return Object.assign(common, {
+        spacingFactor: 1.4,
+        directed: true,
+      });
+    }
+    return common;
+  }
+
   function fitAndLayout() {
     if (!cy) return;
-    cy.layout({
-      name: "cose",
-      animate: false,
-      idealEdgeLength: 80,
-      nodeRepulsion: 4000,
-      gravity: 0.25,
-      numIter: 1500,
-      randomize: false,
-    }).run();
+    var name = document.getElementById("topology-layout").value;
+    cy.layout(layoutOptions(name)).run();
     cy.fit(undefined, 30);
+  }
+
+  var lastData = null;
+
+  function render() {
+    if (!lastData) return;
+    var managedOnly = document.getElementById("topology-managed-only").checked;
+    var status = document.getElementById("topology-status");
+    var els = buildElements(lastData, managedOnly);
+    if (cy) cy.destroy();
+    cy = cytoscape({
+      container: document.getElementById("cy"),
+      elements: els,
+      style: styles(),
+      wheelSensitivity: 0.2,
+    });
+    cy.on("tap", "node", function (evt) { renderDetail(evt.target); });
+    fitAndLayout();
+    var when = lastData.fetched_at
+      ? new Date(lastData.fetched_at).toLocaleTimeString()
+      : "never";
+    var visibleNodes = cy.nodes().length;
+    var visibleEdges = cy.edges().length;
+    status.textContent =
+      visibleNodes + "/" + lastData.node_count + " nodes · " +
+      visibleEdges + "/" + lastData.edge_count + " edges · CDP sweep: " + when;
   }
 
   function load() {
@@ -159,20 +214,8 @@
     fetch("/topology/json")
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (cy) cy.destroy();
-        cy = cytoscape({
-          container: document.getElementById("cy"),
-          elements: buildElements(data),
-          style: styles(),
-          wheelSensitivity: 0.2,
-        });
-        cy.on("tap", "node", function (evt) { renderDetail(evt.target); });
-        fitAndLayout();
-        var when = data.fetched_at
-          ? new Date(data.fetched_at).toLocaleTimeString()
-          : "never";
-        status.textContent =
-          data.node_count + " nodes / " + data.edge_count + " edges · CDP sweep: " + when;
+        lastData = data;
+        render();
       })
       .catch(function (e) {
         status.textContent = "load failed: " + e;
@@ -182,6 +225,8 @@
 
   window.initTopology = function () {
     document.getElementById("topology-refresh").addEventListener("click", load);
+    document.getElementById("topology-managed-only").addEventListener("change", render);
+    document.getElementById("topology-layout").addEventListener("change", render);
     load();
   };
 })();

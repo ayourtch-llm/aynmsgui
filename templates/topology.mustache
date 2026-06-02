@@ -1,6 +1,16 @@
 <h1 class="list-page-heading">Topology</h1>
-<div id="topology-toolbar" style="margin: 0.5em 0; display: flex; align-items: center; gap: 8px;">
+<div id="topology-toolbar" style="margin: 0.5em 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
   <button id="topology-refresh" type="button">Refresh</button>
+  <label><input type="checkbox" id="topology-managed-only" checked> Managed only</label>
+  <label>Layout:
+    <select id="topology-layout">
+      <option value="cose" selected>cose (force)</option>
+      <option value="concentric">concentric</option>
+      <option value="grid">grid</option>
+      <option value="circle">circle</option>
+      <option value="breadthfirst">breadth-first</option>
+    </select>
+  </label>
   <span id="topology-status" style="color:#666; font-size:0.9em;">loading…</span>
   <span style="margin-left:auto; color:#666; font-size:0.85em;">
     Gray = managed logical device · Arrow points TO the device that source sees.

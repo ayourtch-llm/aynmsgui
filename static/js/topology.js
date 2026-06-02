@@ -41,6 +41,10 @@
   // ack is cleared automatically when a device comes back online so the
   // next disconnect re-alarms.
   var ACK_KEY = "aynmsgui:topology:ackedStale";
+  // Set of device ids the operator has flagged as "important" (typically
+  // unmanaged devices the operator cares about — e.g., a critical AP or
+  // codec). Important devices alarm red on stale, same as managed ones.
+  var IMPORTANT_KEY = "aynmsgui:topology:important";
 
   function loadSavedPositions() {
     try {
@@ -137,16 +141,51 @@
     }
   }
 
-  // Walk every device marked .stale and refresh its .stale-unacked
-  // marker based on whether it's managed and whether the operator has
-  // already acknowledged it. Call after any mass stale-tagging pass.
+  function loadImportant() {
+    try {
+      var raw = localStorage.getItem(IMPORTANT_KEY);
+      return raw ? new Set(JSON.parse(raw)) : new Set();
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function saveImportant(set) {
+    try {
+      localStorage.setItem(IMPORTANT_KEY, JSON.stringify(Array.from(set)));
+    } catch (e) {}
+  }
+  function markImportant(id) {
+    var s = loadImportant();
+    s.add(id);
+    saveImportant(s);
+    var node = cy.getElementById(id);
+    if (node.length) node.addClass("important");
+    refreshStaleAlarms();
+    if (node.length) renderDetail(node);
+  }
+  function unmarkImportant(id) {
+    var s = loadImportant();
+    if (s.delete(id)) saveImportant(s);
+    var node = cy.getElementById(id);
+    if (node.length) node.removeClass("important");
+    refreshStaleAlarms();
+    if (node.length) renderDetail(node);
+  }
+
+  // Walk every device and refresh both its .important marker (from the
+  // saved set) and its .stale-unacked alarm marker. A device alarms
+  // when stale AND (managed OR important) AND not already acked.
   function refreshStaleAlarms() {
     if (!cy) return;
     var acks = loadAcks();
+    var important = loadImportant();
     cy.nodes(".device").forEach(function (d) {
       var stale = d.hasClass("stale");
       var managed = !!d.data("managed");
-      var alarmed = stale && managed && !acks.has(d.id());
+      var imp = important.has(d.id());
+      if (imp) d.addClass("important");
+      else d.removeClass("important");
+      var alarmed = stale && (managed || imp) && !acks.has(d.id());
       if (alarmed) d.addClass("stale-unacked");
       else d.removeClass("stale-unacked");
     });
@@ -306,12 +345,16 @@
     var deviceNode = cy.getElementById(deviceId);
     var isStale = deviceNode.length && deviceNode.hasClass("stale");
     var isAlarmed = deviceNode.length && deviceNode.hasClass("stale-unacked");
+    var isImportant = loadImportant().has(deviceId);
 
     var parts = [];
     parts.push('<h3 style="margin:0 0 8px 0;">' + escapeHtml(d.label || d.id) + "</h3>");
     parts.push("<p>");
     if (d.managed) {
       parts.push('<span style="background:#e0e0e0; padding:1px 6px; border-radius:3px;">managed</span> ');
+    }
+    if (isImportant) {
+      parts.push('<span style="background:#1a5276; color:white; padding:1px 6px; border-radius:3px;">important</span> ');
     }
     if (isAlarmed) {
       parts.push('<span style="background:#c0392b; color:white; padding:1px 6px; border-radius:3px;">OFFLINE — unacknowledged</span> ');
@@ -325,6 +368,17 @@
     if (isStale) {
       parts.push('<button data-action="remove-stale-device" data-id="' + escapeHtml(deviceId) +
         '" style="margin-left:8px;">Remove from history</button>');
+    }
+    // Mark/unmark as important. Managed devices already alarm on stale, so
+    // the toggle is only useful for unmanaged ones.
+    if (!d.managed) {
+      if (isImportant) {
+        parts.push('<button data-action="unmark-important" data-id="' + escapeHtml(deviceId) +
+          '" style="margin-left:8px;">Unmark important</button>');
+      } else {
+        parts.push('<button data-action="mark-important" data-id="' + escapeHtml(deviceId) +
+          '" style="margin-left:8px;" title="Alarm (red) if this device disappears from CDP">Mark as important</button>');
+      }
     }
     parts.push("</p>");
 
@@ -381,6 +435,8 @@
         if (act === "remove-stale-device") removeStaleDevice(id);
         else if (act === "remove-stale-edge") removeStaleEdge(id);
         else if (act === "ack-stale-device") ackDevice(id);
+        else if (act === "mark-important") markImportant(id);
+        else if (act === "unmark-important") unmarkImportant(id);
       });
     });
   }
@@ -622,17 +678,28 @@
           color: "#aaa",
         },
       },
-      // Managed devices that have gone stale and the operator has NOT
-      // yet acknowledged the outage. Render alarming red so it stands
-      // out against the gray sea of stale APs/cameras. Acknowledging
-      // (via the detail-panel button) drops this class and the device
-      // settles into normal pale gray.
+      // Important = operator-flagged. Subtle double-border accent so the
+      // device is recognizable even when healthy/online. The .stale and
+      // .stale-unacked rules below override the border color/style for
+      // stale and alarmed states respectively.
+      {
+        selector: "node.device.important",
+        style: {
+          "border-style": "double",
+          "border-width": 4,
+          "border-color": "#1a5276",
+        },
+      },
+      // Managed-or-important devices that have gone stale and the operator
+      // has NOT yet acknowledged the outage. Render alarming red so they
+      // stand out against the gray sea of stale APs/cameras.
       {
         selector: "node.device.stale-unacked",
         style: {
           "background-color": "#ffe5e5",
           "background-opacity": 1,
           "border-color": "#c0392b",
+          "border-style": "solid",
           "border-width": 2,
           color: "#c0392b",
         },
@@ -1437,8 +1504,10 @@
     if (!confirm("Clear all cached topology history? This wipes every gray (stale) device and edge from the local cache.")) return;
     clearShadow();
     try { localStorage.removeItem(ACK_KEY); } catch (e) {}
+    try { localStorage.removeItem(IMPORTANT_KEY); } catch (e) {}
     if (cy) {
       cy.elements(".stale").remove();
+      cy.nodes(".device").removeClass("important stale-unacked");
       saveCurrentPositions();
     }
     var panel = document.getElementById("topology-detail");

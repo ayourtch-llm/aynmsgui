@@ -1417,7 +1417,12 @@
       highlightSiblings(evt.target);
     });
     cy.on("unselect", function () {
+      // Ignore internal unselects from the BFS cycle (handleCtrlRightClick
+      // unselects everything before re-selecting the new ring); only a real
+      // user-driven unselect should reset the cycle.
+      if (suppressSelectHandler) return;
       cy.elements(".highlighted").removeClass("highlighted");
+      bfsState = null;
     });
     // ctrl+right-click on a device cycles a BFS-radius selection.
     cy.on("cxttap", "node", handleCtrlRightClick);

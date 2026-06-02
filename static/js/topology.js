@@ -141,46 +141,25 @@
       });
     });
 
-    // 4. Dedupe CDP adjacencies by the unordered port pair.
-    //    CDP usually reports both directions (A→B and B→A) for the same
-    //    physical link; merge them into a single edge with a "bidirectional"
-    //    class so we render one line with arrows on both ends instead of
-    //    two parallel arrows.
-    var pairs = new Map();
+    // 4. Emit one edge per CDP adjacency. Bidirectional links naturally
+    //    become two parallel edges (A→B and B→A); Cytoscape's bezier
+    //    curve-style auto-offsets multiple edges between the same node
+    //    pair into side-by-side curves. Each curve carries a single
+    //    mid-arrow pointing toward its own target — i.e. arrows point
+    //    OUTWARD at their respective ports, on separate parallel lines.
     data.edges.forEach(function (e) {
       if (!visibleDevices.has(e.source) || !visibleDevices.has(e.target)) return;
-      var src = portChildId(e.source, e.sport);
-      var tgt = portChildId(e.target, e.tport);
-      var key = src < tgt ? src + "|" + tgt : tgt + "|" + src;
-      var existing = pairs.get(key);
-      if (existing) {
-        existing.bidirectional = true;
-        return;
-      }
-      pairs.set(key, {
-        id: e.id,
-        source: src,
-        target: tgt,
-        sport: e.sport,
-        tport: e.tport,
-        sourceDevice: e.source,
-        targetDevice: e.target,
-        bidirectional: false,
-      });
-    });
-    pairs.forEach(function (p) {
       els.push({
         group: "edges",
         data: {
-          id: p.id,
-          source: p.source,
-          target: p.target,
-          sport: p.sport,
-          tport: p.tport,
-          _sourceDevice: p.sourceDevice,
-          _targetDevice: p.targetDevice,
+          id: e.id,
+          source: portChildId(e.source, e.sport),
+          target: portChildId(e.target, e.tport),
+          sport: e.sport,
+          tport: e.tport,
+          _sourceDevice: e.source,
+          _targetDevice: e.target,
         },
-        classes: p.bidirectional ? "bidirectional" : "",
       });
     });
 
@@ -241,33 +220,32 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
-      // Arrows sit ALONG the line (not crammed into the port box border),
-      // but off-center by ~25px from each port. The "distance-from-node"
-      // shortens the visible line; the arrow then renders at the line's
-      // endpoint, with its tip naturally pointing outward toward the port.
-      // For bidirectional edges, source and target arrows sit symmetrically
-      // off-center on opposite sides of the midpoint — pointing outward at
-      // their own ports, no risk of facing each other.
+      // Line runs all the way to the port box; the arrow triangle floats
+      // along the line via mid-target-arrow (positioned ~75% along the
+      // edge, pointing toward target). For bidirectional CDP adjacencies,
+      // we emit two edges (A→B and B→A) which Cytoscape auto-offsets into
+      // parallel curves — each curve has its own mid-arrow pointing
+      // outward at its own target port, no in-line collision.
       {
         selector: "edge",
         style: {
           width: 1,
           "line-color": "#666",
           "curve-style": "bezier",
-          "target-arrow-shape": "triangle",
-          "target-arrow-color": "#666",
+          "mid-target-arrow-shape": "triangle",
+          "mid-target-arrow-color": "#666",
           "arrow-scale": 1.4,
           "source-endpoint": "outside-to-line",
           "target-endpoint": "outside-to-line",
-          "source-distance-from-node": 25,
-          "target-distance-from-node": 25,
+          "source-distance-from-node": 1,
+          "target-distance-from-node": 1,
         },
       },
       {
         selector: "edge:selected",
         style: {
           "line-color": "#2980b9",
-          "target-arrow-color": "#2980b9",
+          "mid-target-arrow-color": "#2980b9",
           width: 2,
         },
       },
@@ -282,27 +260,12 @@
           "background-color": "#eaf3fb",
         },
       },
-      // Bidirectional adjacencies (CDP reported both A→B and B→A) get a
-      // source-end arrow too, pointing outward at the source port. Combined
-      // with the default target-end arrow at the target port, this renders
-      // as one line with arrows pointing outward at BOTH ends — "both sides
-      // see each other", with no arrows pointing at one another.
-      {
-        selector: "edge.bidirectional",
-        style: {
-          "source-arrow-shape": "triangle",
-          "source-arrow-color": "#666",
-        },
-      },
-      // Highlight: thicker blue line + matching blue arrows on both ends
-      // (source-arrow-color covers the bidirectional case so it doesn't
-      // inherit gray from .bidirectional).
+      // Highlight: thicker blue line + matching blue mid-arrow.
       {
         selector: "edge.highlighted",
         style: {
           "line-color": "#2980b9",
-          "target-arrow-color": "#2980b9",
-          "source-arrow-color": "#2980b9",
+          "mid-target-arrow-color": "#2980b9",
           width: 3,
         },
       },

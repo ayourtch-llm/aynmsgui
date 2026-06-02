@@ -99,8 +99,12 @@
   function updateShadow(data) {
     try {
       var s = readShadow();
-      (data.nodes || []).forEach(function (n) { s.nodes[n.id] = n; });
-      (data.edges || []).forEach(function (e) { s.edges[e.id] = e; });
+      (data.nodes || []).forEach(function (n) {
+        if (n && n.id) s.nodes[n.id] = n;
+      });
+      (data.edges || []).forEach(function (e) {
+        if (e && e.id && e.source && e.target) s.edges[e.id] = e;
+      });
       localStorage.setItem(DATA_KEY, JSON.stringify(s));
     } catch (e) {
       console.warn("topology: failed to update shadow", e);
@@ -275,8 +279,12 @@
   // un-stale items they cover.
   function shadowAsData() {
     var s = readShadow();
-    var nodes = Object.keys(s.nodes).map(function (k) { return s.nodes[k]; });
-    var edges = Object.keys(s.edges).map(function (k) { return s.edges[k]; });
+    var nodes = Object.keys(s.nodes)
+      .map(function (k) { return s.nodes[k]; })
+      .filter(function (n) { return n && n.id; });
+    var edges = Object.keys(s.edges)
+      .map(function (k) { return s.edges[k]; })
+      .filter(function (e) { return e && e.id && e.source && e.target; });
     if (!nodes.length && !edges.length) return null;
     return {
       nodes: nodes,

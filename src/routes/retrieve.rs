@@ -27,6 +27,7 @@ struct SeenDeviceRow {
 struct RetrieveFormCtx {
     devices: Vec<SeenDeviceRow>,
     device_count: usize,
+    quicksearch_table_id: &'static str,
 }
 
 #[derive(Serialize)]
@@ -88,7 +89,11 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
         .collect();
     drop(devices);
 
-    let ctx = RetrieveFormCtx { devices: rows, device_count };
+    let ctx = RetrieveFormCtx {
+        devices: rows,
+        device_count,
+        quicksearch_table_id: "retrieveTable",
+    };
     let html = state
         .templates
         .render_page(

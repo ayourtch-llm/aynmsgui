@@ -1,12 +1,15 @@
-<h1>Retrieve Current Configs</h1>
+<h1 class="list-page-heading">Retrieve Current Configs</h1>
 <p>SSH into the selected assets and commit their running configs to the current-configs repo.</p>
 <form method="POST" action="/retrieve">
 <h2>Seen Assets ({{device_count}})</h2>
 <p>
   <a href="#" id="retrieve-select-all">Select all</a> ·
   <a href="#" id="retrieve-select-none">Select none</a>
+  <span style="color:#888; margin-left:8px;">(applies to currently visible rows)</span>
 </p>
-<table>
+{{> quicksearch}}
+<div class="table-scroll">
+<table id="{{quicksearch_table_id}}">
 <thead><tr><th></th><th>Serial</th><th>Hostname</th><th>IPv4</th><th>IPv6</th></tr></thead>
 <tbody>
 {{#devices}}
@@ -17,13 +20,21 @@
 {{/devices}}
 </tbody>
 </table>
+</div>
+{{> colresize}}
 <p><button type="submit">Retrieve from selected</button></p>
 </form>
 <p><a href="/">Back to Dashboard</a></p>
 <script>
 (function () {
+  // Select all / none acts on currently-visible rows only, so it composes
+  // with the quicksearch filter: search down to what you want, then "select all".
   var setAll = function (checked) {
-    document.querySelectorAll(".retrieve-row-check").forEach(function (cb) { cb.checked = checked; });
+    document.querySelectorAll("#{{quicksearch_table_id}} tbody tr").forEach(function (tr) {
+      if (tr.style.display === "none") return;
+      var cb = tr.querySelector(".retrieve-row-check");
+      if (cb) cb.checked = checked;
+    });
   };
   var sa = document.getElementById("retrieve-select-all");
   var sn = document.getElementById("retrieve-select-none");

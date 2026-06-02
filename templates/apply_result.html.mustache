@@ -1,0 +1,6 @@
+<h1>Config Applied</h1>
+<p>Successfully applied config to <strong>{{serial}}</strong> ({{ip}}) via atomic update.</p>
+{{#verification_ok}}<p style='color:green'>Post-apply verification passed — no remaining delta.</p>{{/verification_ok}}
+{{^verification_ok}}<p style='color:orange'>Warning: Post-apply delta is not empty. Remaining changes:</p>
+<pre style='background:#fff3cd; padding:0.5rem;'>{{remaining_delta}}</pre>{{/verification_ok}}
+<p><a href="/diff">Back to Diffs</a> | <a href="/diff/{{serial}}">View Updated Diff</a></p>

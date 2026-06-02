@@ -5,10 +5,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
+use crate::routes::{message_response, message_response_with_html};
 use crate::state::AppState;
 
 // ── Form struct ───────────────────────────────────────────────────────────────
@@ -16,6 +17,23 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 pub(crate) struct ApplyForm {
     safety_minutes: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct ApplyConfirmCtx {
+    name: String,
+    logical_device: String,
+    hostname: String,
+    ip: String,
+    delta: String,
+}
+
+#[derive(Serialize)]
+struct ApplyResultCtx {
+    serial: String,
+    ip: String,
+    verification_ok: bool,
+    remaining_delta: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -31,9 +49,11 @@ pub async fn apply_page(
     ) {
         (Some(t), Some(c)) if t.exists() => (t, c),
         _ => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Html(
-                "<html><body><p>Config paths not configured</p></body></html>".to_string(),
-            )).into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                message_response(&state, "Apply", "Config paths not configured", None),
+            )
+                .into_response();
         }
     };
 
@@ -43,9 +63,12 @@ pub async fn apply_page(
     let target_config = match std::fs::read_to_string(&target_file) {
         Ok(c) => aycfgapply::normalize::normalize_target_config(&c),
         Err(_) => {
-            return (StatusCode::NOT_FOUND, Html(format!(
-                "<html><body><p>Target config for '{}' not found</p></body></html>", name
-            ))).into_response();
+            let msg = format!("Target config for '{}' not found", name);
+            return (
+                StatusCode::NOT_FOUND,
+                message_response(&state, "Not Found", &msg, Some(("/diff", "Back to Diffs"))),
+            )
+                .into_response();
         }
     };
 
@@ -57,15 +80,8 @@ pub async fn apply_page(
     let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
 
     if delta.trim().is_empty() {
-        return Html(format!(
-            r#"<!DOCTYPE html>
-<html><body>
-<h1>No Changes</h1>
-<p>Device <strong>{name}</strong> is already at the target configuration.</p>
-<p><a href="/diff">Back to Diffs</a></p>
-</body></html>"#,
-            name = html_escape(&name),
-        )).into_response();
+        let msg = format!("Device {} is already at the target configuration.", name);
+        return message_response(&state, "No Changes", &msg, Some(("/diff", "Back to Diffs")));
     }
 
     // Look up logical device name for this serial
@@ -84,40 +100,27 @@ pub async fn apply_page(
     let device = devices.get(&name);
     let device_ip = device
         .and_then(|d| d.last_ipv4.as_deref().or(d.last_ipv6.as_deref()))
-        .unwrap_or("unknown");
-    let device_hostname = device.and_then(|d| d.hostname.as_deref()).unwrap_or("-");
+        .unwrap_or("unknown")
+        .to_string();
+    let device_hostname = device
+        .and_then(|d| d.hostname.as_deref())
+        .unwrap_or("-")
+        .to_string();
+    drop(devices);
 
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Apply Config: {name}</title></head>
-<body>
-<h1>Apply Config: {name}</h1>
-<table>
-<tr><th>Serial</th><td>{name}</td></tr>
-<tr><th>Logical Device</th><td>{logical_device}</td></tr>
-<tr><th>Hostname</th><td>{hostname}</td></tr>
-<tr><th>IP</th><td>{ip}</td></tr>
-</table>
-<h2>Delta to apply</h2>
-<pre style="background:#f5f5f5; padding:1rem; border:1px solid #ccc; overflow-x:auto;">{delta}</pre>
-<h2>Confirm Apply</h2>
-<form method="POST" action="/apply/{name}">
-  <label for="safety_minutes">Safety reload (minutes, 0 = none):</label><br>
-  <input type="number" id="safety_minutes" name="safety_minutes" value="5" min="0" max="60"><br><br>
-  <button type="submit" style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
-    Apply Changes via Atomic Update
-  </button>
-</form>
-<p><a href="/diff">Back to Diffs</a></p>
-</body>
-</html>"#,
-        name = html_escape(&name),
-        logical_device = html_escape(&logical_device),
-        hostname = html_escape(device_hostname),
-        ip = html_escape(device_ip),
-        delta = html_escape(&delta),
-    )).into_response()
+    let ctx = ApplyConfirmCtx {
+        name: name.clone(),
+        logical_device,
+        hostname: device_hostname,
+        ip: device_ip,
+        delta,
+    };
+    let title = format!("Apply Config: {name}");
+    let html = state
+        .templates
+        .render_page(&state.templates.apply_confirm, &title, "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
 }
 
 /// POST /apply/{name} — apply the delta to the device
@@ -134,9 +137,11 @@ pub async fn apply_config(
     ) {
         (Some(t), Some(c)) if t.exists() => (t, c),
         _ => {
-            return (StatusCode::SERVICE_UNAVAILABLE, Html(
-                "<html><body><p>Config paths not configured</p></body></html>".to_string(),
-            )).into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                message_response(&state, "Apply", "Config paths not configured", None),
+            )
+                .into_response();
         }
     };
 
@@ -147,9 +152,12 @@ pub async fn apply_config(
     let target_config = match std::fs::read_to_string(&target_file) {
         Ok(c) => aycfgapply::normalize::normalize_target_config(&c),
         Err(_) => {
-            return (StatusCode::NOT_FOUND, Html(format!(
-                "<html><body><p>Target config for '{}' not found</p></body></html>", name
-            ))).into_response();
+            let msg = format!("Target config for '{}' not found", name);
+            return (
+                StatusCode::NOT_FOUND,
+                message_response(&state, "Not Found", &msg, Some(("/diff", "Back to Diffs"))),
+            )
+                .into_response();
         }
     };
 
@@ -161,15 +169,8 @@ pub async fn apply_config(
     let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
 
     if delta.trim().is_empty() {
-        return Html(format!(
-            r#"<!DOCTYPE html>
-<html><body>
-<h1>No Changes</h1>
-<p>Device <strong>{name}</strong> is already at the target configuration.</p>
-<p><a href="/diff">Back to Diffs</a></p>
-</body></html>"#,
-            name = html_escape(&name),
-        )).into_response();
+        let msg = format!("Device {} is already at the target configuration.", name);
+        return message_response(&state, "No Changes", &msg, Some(("/diff", "Back to Diffs")));
     }
 
     // Find device IP
@@ -182,15 +183,11 @@ pub async fn apply_config(
     let ip = match device_ip {
         Some(ip) => ip,
         None => {
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>No IP Address</h1>
-<p>Device <strong>{name}</strong> has no known IP address. Import or extract it first.</p>
-<p><a href="/diff">Back to Diffs</a></p>
-</body></html>"#,
-                name = html_escape(&name),
-            )).into_response();
+            let msg = format!(
+                "Device {} has no known IP address. Import or extract it first.",
+                name
+            );
+            return message_response(&state, "No IP Address", &msg, Some(("/diff", "Back to Diffs")));
         }
     };
 
@@ -240,55 +237,38 @@ pub async fn apply_config(
 
             info!(serial = %serial, effectively_applied = effectively_applied, "Config applied");
 
-            let status_msg = if effectively_applied {
-                "<p style='color:green'>Post-apply verification passed — no remaining delta.</p>"
-            } else {
-                &format!(
-                    "<p style='color:orange'>Warning: Post-apply delta is not empty. \
-                     Remaining changes:</p><pre style='background:#fff3cd; padding:0.5rem;'>{}</pre>",
-                    html_escape(remaining_delta.trim())
-                )
+            let ctx = ApplyResultCtx {
+                serial,
+                ip,
+                verification_ok: effectively_applied,
+                remaining_delta: remaining_delta.trim().to_string(),
             };
-
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Config Applied</h1>
-<p>Successfully applied config to <strong>{serial}</strong> ({ip}) via atomic update.</p>
-{status_msg}
-<p><a href="/diff">Back to Diffs</a> | <a href="/diff/{serial}">View Updated Diff</a></p>
-</body></html>"#,
-                serial = html_escape(&serial),
-                ip = html_escape(&ip),
-                status_msg = status_msg,
-            )).into_response()
+            let html = state
+                .templates
+                .render_page(&state.templates.apply_result, "Config Applied", "", &ctx)
+                .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+            Html(html).into_response()
         }
         aycfgapply::apply::ApplyResult::Skipped { serial, reason } => {
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Skipped</h1>
-<p>Device <strong>{serial}</strong> was skipped: {reason}</p>
-<p><a href="/diff">Back to Diffs</a></p>
-</body></html>"#,
-                serial = html_escape(&serial),
-                reason = html_escape(&reason),
-            )).into_response()
+            let msg = format!("Device {} was skipped: {}", serial, reason);
+            message_response(&state, "Skipped", &msg, Some(("/diff", "Back to Diffs")))
         }
         aycfgapply::apply::ApplyResult::Failed { serial, error } => {
             warn!(serial = %serial, error = %error, "Config apply failed");
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Apply Failed</h1>
-<p>Failed to apply config to <strong>{serial}</strong> ({ip}):</p>
-<pre>{error}</pre>
-<p><a href="/apply/{serial}">Try Again</a> | <a href="/diff">Back to Diffs</a></p>
-</body></html>"#,
-                serial = html_escape(&serial),
-                ip = html_escape(&ip),
-                error = html_escape(&error),
-            )).into_response()
+            let body = format!(
+                "<p>Failed to apply config to <strong>{}</strong> ({}):</p><pre>{}</pre>\
+                 <p><a href=\"/apply/{}\">Try Again</a></p>",
+                html_escape(&serial),
+                html_escape(&ip),
+                html_escape(&error),
+                html_escape(&serial),
+            );
+            message_response_with_html(
+                &state,
+                "Apply Failed",
+                &body,
+                Some(("/diff", "Back to Diffs")),
+            )
         }
     }
 }

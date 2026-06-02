@@ -1,0 +1,18 @@
+<h1>Apply Config: {{name}}</h1>
+<table>
+<tr><th>Serial</th><td>{{name}}</td></tr>
+<tr><th>Logical Device</th><td>{{logical_device}}</td></tr>
+<tr><th>Hostname</th><td>{{hostname}}</td></tr>
+<tr><th>IP</th><td>{{ip}}</td></tr>
+</table>
+<h2>Delta to apply</h2>
+<pre style="background:#f5f5f5; padding:1rem; border:1px solid #ccc; overflow-x:auto;">{{delta}}</pre>
+<h2>Confirm Apply</h2>
+<form method="POST" action="/apply/{{name}}">
+  <label for="safety_minutes">Safety reload (minutes, 0 = none):</label><br>
+  <input type="number" id="safety_minutes" name="safety_minutes" value="5" min="0" max="60"><br><br>
+  <button type="submit" style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
+    Apply Changes via Atomic Update
+  </button>
+</form>
+<p><a href="/diff">Back to Diffs</a></p>

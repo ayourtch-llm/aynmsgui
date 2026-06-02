@@ -1,0 +1,9 @@
+<h1>Retrieval Complete</h1>
+<p>Retrieved: <strong>{{retrieved_count}}</strong> | Failed: <strong>{{failed_count}}</strong> | Skipped: <strong>{{skipped_count}}</strong></p>
+<h2>Retrieved ({{retrieved_count}})</h2>
+<ul>{{#retrieved}}<li>{{.}}</li>{{/retrieved}}</ul>
+<h2>Failed ({{failed_count}})</h2>
+<ul>{{#failed}}<li><strong>{{serial}}</strong>: {{reason}}</li>{{/failed}}</ul>
+<h2>Skipped ({{skipped_count}})</h2>
+<ul>{{#skipped}}<li><strong>{{serial}}</strong>: {{reason}}</li>{{/skipped}}</ul>
+<p><a href="/retrieve">Retrieve Again</a> | <a href="/diff">View Diffs</a> | <a href="/">Dashboard</a></p>

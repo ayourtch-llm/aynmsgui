@@ -5,9 +5,10 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::routes::{message_response, message_response_with_html};
 use crate::state::AppState;
 
 // ── Form struct ───────────────────────────────────────────────────────────────
@@ -19,23 +20,18 @@ pub(crate) struct ExtractSwForm {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn extract_sw_page(State(_state): State<AppState>) -> Response {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Extract Software Image</title></head>
-<body>
-<h1>Extract Software Image</h1>
-<p>Connect to a Cisco IOS device via SSH, identify the running image, and download it
-to the local software-images directory via HTTP copy.</p>
-<form method="POST" action="/extract-sw">
-  <label for="ip">IP Address:</label><br>
-  <input type="text" id="ip" name="ip" required placeholder="192.168.1.1"><br><br>
-  <button type="submit">Extract Software Image</button>
-</form>
-<p><a href="/software">Back to Software</a> | <a href="/">Dashboard</a></p>
-</body>
-</html>"#;
-
+pub async fn extract_sw_page(State(state): State<AppState>) -> Response {
+    #[derive(Serialize)]
+    struct Empty {}
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.extract_sw_form,
+            "Extract Software Image",
+            "",
+            &Empty {},
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
@@ -47,14 +43,11 @@ pub async fn extract_sw_device(
     if form.ip.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Html(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Error</h1>
-<p>IP address is required.</p>
-<a href="/extract-sw">Try again</a>
-</body></html>"#
-                    .to_string(),
+            message_response(
+                &state,
+                "Error",
+                "IP address is required.",
+                Some(("/extract-sw", "Try again")),
             ),
         )
             .into_response();
@@ -66,9 +59,11 @@ pub async fn extract_sw_device(
         _ => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Html(
-                    "<html><body><h1>Error</h1><p>cfggen base directory is not configured or does not exist.</p></body></html>"
-                        .to_string(),
+                message_response(
+                    &state,
+                    "Error",
+                    "cfggen base directory is not configured or does not exist.",
+                    None,
                 ),
             )
                 .into_response();
@@ -77,17 +72,16 @@ pub async fn extract_sw_device(
 
     if let Err(e) = std::fs::create_dir_all(&sw_dir) {
         warn!(error = %e, "Failed to create software-images directory");
-        return Html(format!(
-            r#"<!DOCTYPE html>
-<html><body>
-<h1>Error</h1>
-<p>Could not create software-images directory:</p>
-<pre>{}</pre>
-<a href="/extract-sw">Try again</a>
-</body></html>"#,
+        let body = format!(
+            "<p>Could not create software-images directory:</p><pre>{}</pre>",
             html_escape(&format!("{e}")),
-        ))
-        .into_response();
+        );
+        return message_response_with_html(
+            &state,
+            "Error",
+            &body,
+            Some(("/extract-sw", "Try again")),
+        );
     }
 
     let ip = form.ip.trim().to_string();

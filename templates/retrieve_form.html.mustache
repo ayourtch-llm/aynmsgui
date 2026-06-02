@@ -1,0 +1,13 @@
+<h1>Retrieve Current Configs</h1>
+<p>SSH into all seen assets and commit their running configs to the current-configs repo.</p>
+<form method="POST" action="/retrieve">
+  <button type="submit">Retrieve Current Configs</button>
+</form>
+<h2>Seen Assets ({{device_count}})</h2>
+<table border="1" cellpadding="4">
+<tr><th>Serial</th><th>Hostname</th><th>IPv4</th><th>IPv6</th></tr>
+{{#devices}}
+<tr><td>{{serial}}</td><td>{{hostname}}</td><td>{{ipv4}}</td><td>{{ipv6}}</td></tr>
+{{/devices}}
+</table>
+<p><a href="/">Back to Dashboard</a></p>

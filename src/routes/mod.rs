@@ -15,9 +15,40 @@ pub mod settings;
 pub mod software;
 
 use axum::{middleware, Router};
+use axum::response::{Html, IntoResponse, Response};
 use tower_http::services::ServeDir;
 use crate::auth::middleware::auth_middleware;
 use crate::state::AppState;
+
+/// Render the shared message page (title + plain-text body + optional back link)
+/// as an axum Response, wrapped in the base layout.
+pub fn message_response(
+    state: &AppState,
+    title: &str,
+    msg: &str,
+    back: Option<(&str, &str)>,
+) -> Response {
+    let html = state
+        .templates
+        .render_message(title, Some(msg), None, back)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+/// Same as `message_response` but treats `body_html` as already-escaped HTML
+/// (use when the body contains structured markup like <pre>...</pre>).
+pub fn message_response_with_html(
+    state: &AppState,
+    title: &str,
+    body_html: &str,
+    back: Option<(&str, &str)>,
+) -> Response {
+    let html = state
+        .templates
+        .render_message(title, None, Some(body_html), back)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
 
 /// Wrap page content in the common site layout with header, nav, and CSS.
 /// Pass empty string for username if not available.

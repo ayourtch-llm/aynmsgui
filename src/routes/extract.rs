@@ -5,9 +5,10 @@ use axum::{
     routing::get,
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::routes::{message_response, message_response_with_html};
 use crate::state::AppState;
 
 // ── Form struct ───────────────────────────────────────────────────────────────
@@ -19,22 +20,13 @@ pub(crate) struct ExtractForm {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn extract_page(State(_state): State<AppState>) -> Response {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Extract Config</title></head>
-<body>
-<h1>Extract Config</h1>
-<p>Connect to a Cisco IOS device via SSH to collect show command outputs and run the aycfggen extraction pipeline.</p>
-<form method="POST" action="/extract">
-  <label for="ip">IP Address:</label><br>
-  <input type="text" id="ip" name="ip" required placeholder="192.168.1.1"><br><br>
-  <button type="submit">Extract Config</button>
-</form>
-<p><a href="/devices">Back to Devices</a></p>
-</body>
-</html>"#;
-
+pub async fn extract_page(State(state): State<AppState>) -> Response {
+    #[derive(Serialize)]
+    struct Empty {}
+    let html = state
+        .templates
+        .render_page(&state.templates.extract_form, "Extract Config", "", &Empty {})
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
@@ -46,14 +38,11 @@ pub async fn extract_device(
     if form.ip.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Html(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Extract Error</h1>
-<p>IP address is required.</p>
-<a href="/extract">Try again</a>
-</body></html>"#
-                    .to_string(),
+            message_response(
+                &state,
+                "Extract Error",
+                "IP address is required.",
+                Some(("/extract", "Try again")),
             ),
         )
             .into_response();
@@ -64,9 +53,11 @@ pub async fn extract_device(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Html(
-                    r#"<html><body><h1>Error</h1><p>cfggen base directory is not configured.</p></body></html>"#
-                        .to_string(),
+                message_response(
+                    &state,
+                    "Error",
+                    "cfggen base directory is not configured.",
+                    None,
                 ),
             )
                 .into_response();
@@ -74,17 +65,13 @@ pub async fn extract_device(
     };
 
     if !base_dir.exists() {
+        let msg = format!(
+            "cfggen base directory does not exist: {}",
+            base_dir.display()
+        );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Not Configured</h1>
-<p>cfggen base directory does not exist: <code>{dir}</code></p>
-<a href="/extract">Try again</a>
-</body></html>"#,
-                dir = html_escape(&base_dir.display().to_string()),
-            )),
+            message_response(&state, "Not Configured", &msg, Some(("/extract", "Try again"))),
         )
             .into_response();
     }
@@ -103,18 +90,17 @@ pub async fn extract_device(
         Ok(c) => c,
         Err(e) => {
             warn!(ip = %ip, error = %e, "SSH connection failed");
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Connection Failed</h1>
-<p>Could not connect to <strong>{ip}</strong> via SSH:</p>
-<pre>{error}</pre>
-<a href="/extract">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response();
+            let body = format!(
+                "<p>Could not connect to <strong>{}</strong> via SSH:</p><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+            );
+            return message_response_with_html(
+                &state,
+                "Connection Failed",
+                &body,
+                Some(("/extract", "Try again")),
+            );
         }
     };
 
@@ -147,19 +133,18 @@ pub async fn extract_device(
             Err(e) => {
                 warn!(ip = %ip, cmd = %cmd, error = %e, "Failed to run command");
                 let _ = conn.disconnect().await;
-                return Html(format!(
-                    r#"<!DOCTYPE html>
-<html><body>
-<h1>Command Failed</h1>
-<p>Connected to <strong>{ip}</strong> but '{cmd}' failed:</p>
-<pre>{error}</pre>
-<a href="/extract">Try again</a>
-</body></html>"#,
-                    ip = html_escape(&ip),
-                    cmd = html_escape(cmd),
-                    error = html_escape(&format!("{e}")),
-                ))
-                .into_response();
+                let body = format!(
+                    "<p>Connected to <strong>{}</strong> but '{}' failed:</p><pre>{}</pre>",
+                    html_escape(&ip),
+                    html_escape(cmd),
+                    html_escape(&format!("{e}")),
+                );
+                return message_response_with_html(
+                    &state,
+                    "Command Failed",
+                    &body,
+                    Some(("/extract", "Try again")),
+                );
             }
         }
     }
@@ -185,18 +170,17 @@ pub async fn extract_device(
     let saved_path = std::path::PathBuf::from(format!("/tmp/aynmsgui-extract-{}.txt", ip));
     if let Err(e) = std::fs::write(&saved_path, &collected) {
         warn!(ip = %ip, error = %e, "Failed to write temp file");
-        return Html(format!(
-            r#"<!DOCTYPE html>
-<html><body>
-<h1>File Write Failed</h1>
-<p>Could not save collected output for <strong>{ip}</strong>:</p>
-<pre>{error}</pre>
-<a href="/extract">Try again</a>
-</body></html>"#,
-            ip = html_escape(&ip),
-            error = html_escape(&format!("{e}")),
-        ))
-        .into_response();
+        let body = format!(
+            "<p>Could not save collected output for <strong>{}</strong>:</p><pre>{}</pre>",
+            html_escape(&ip),
+            html_escape(&format!("{e}")),
+        );
+        return message_response_with_html(
+            &state,
+            "File Write Failed",
+            &body,
+            Some(("/extract", "Try again")),
+        );
     }
 
     // Build ResolvedExtractDirs from cfggen_base_dir
@@ -221,18 +205,17 @@ pub async fn extract_device(
     for subdir in &subdirs {
         if let Err(e) = std::fs::create_dir_all(subdir) {
             warn!(ip = %ip, dir = ?subdir, error = %e, "Failed to create cfggen subdirectory");
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Directory Error</h1>
-<p>Could not create directory <code>{dir}</code>:</p>
-<pre>{error}</pre>
-<a href="/extract">Try again</a>
-</body></html>"#,
-                dir = html_escape(&subdir.display().to_string()),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response();
+            let body = format!(
+                "<p>Could not create directory <code>{}</code>:</p><pre>{}</pre>",
+                html_escape(&subdir.display().to_string()),
+                html_escape(&format!("{e}")),
+            );
+            return message_response_with_html(
+                &state,
+                "Directory Error",
+                &body,
+                Some(("/extract", "Try again")),
+            );
         }
     }
 
@@ -252,51 +235,47 @@ pub async fn extract_device(
     match result {
         Ok(Ok(())) => {
             info!(ip = %ip, "Config extraction completed successfully");
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Extraction Complete</h1>
-<p>Successfully extracted config from <strong>{ip}</strong>.</p>
-<p><a href="/devices">Back to Devices</a></p>
-</body></html>"#,
-                ip = html_escape(&ip),
-            ))
-            .into_response()
+            let msg = format!("Successfully extracted config from {}.", ip);
+            message_response(
+                &state,
+                "Extraction Complete",
+                &msg,
+                Some(("/devices", "Back to Devices")),
+            )
         }
         Ok(Err(e)) => {
             warn!(ip = %ip, error = %e, "Extraction pipeline failed");
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Extraction Failed</h1>
-<p>SSH collection succeeded but the extraction pipeline failed for <strong>{ip}</strong>:</p>
-<pre>{error}</pre>
-<a href="/extract">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response()
+            let body = format!(
+                "<p>SSH collection succeeded but the extraction pipeline failed for <strong>{}</strong>:</p><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+            );
+            message_response_with_html(
+                &state,
+                "Extraction Failed",
+                &body,
+                Some(("/extract", "Try again")),
+            )
         }
         Err(e) => {
             warn!(ip = %ip, error = %e, "spawn_blocking panicked during extraction");
-            Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Internal Error</h1>
-<p>Extraction task panicked for <strong>{ip}</strong>:</p>
-<pre>{error}</pre>
-<a href="/extract">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response()
+            let body = format!(
+                "<p>Extraction task panicked for <strong>{}</strong>:</p><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+            );
+            message_response_with_html(
+                &state,
+                "Internal Error",
+                &body,
+                Some(("/extract", "Try again")),
+            )
         }
     }
 }
 
-/// HTML-escape a string to prevent XSS from device-supplied data.
+/// HTML-escape a string for embedding inside <pre>/<code> blocks where
+/// device-supplied text might include angle brackets.
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

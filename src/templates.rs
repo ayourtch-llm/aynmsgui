@@ -23,6 +23,14 @@ pub struct Templates {
     pub diff_detail: mustache::Template,
     pub import_form: mustache::Template,
     pub import_result: mustache::Template,
+    pub extract_form: mustache::Template,
+    pub extract_sw_form: mustache::Template,
+    pub software: mustache::Template,
+    pub upgrade_started: mustache::Template,
+    pub retrieve_form: mustache::Template,
+    pub retrieve_result: mustache::Template,
+    pub apply_confirm: mustache::Template,
+    pub apply_result: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -42,6 +50,14 @@ impl Templates {
             diff_detail: compile(&dir.join("diff_detail.html.mustache"))?,
             import_form: compile(&dir.join("import_form.html.mustache"))?,
             import_result: compile(&dir.join("import_result.html.mustache"))?,
+            extract_form: compile(&dir.join("extract_form.html.mustache"))?,
+            extract_sw_form: compile(&dir.join("extract_sw_form.html.mustache"))?,
+            software: compile(&dir.join("software.html.mustache"))?,
+            upgrade_started: compile(&dir.join("upgrade_started.html.mustache"))?,
+            retrieve_form: compile(&dir.join("retrieve_form.html.mustache"))?,
+            retrieve_result: compile(&dir.join("retrieve_result.html.mustache"))?,
+            apply_confirm: compile(&dir.join("apply_confirm.html.mustache"))?,
+            apply_result: compile(&dir.join("apply_result.html.mustache"))?,
             message: compile(&dir.join("message.html.mustache"))?,
         })
     }

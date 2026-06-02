@@ -45,26 +45,7 @@ struct ImportResultCtx {
     compile_error: String,
 }
 
-fn render_message(state: &AppState, title: &str, msg: &str, back: Option<(&str, &str)>) -> Response {
-    let html = state
-        .templates
-        .render_message(title, Some(msg), None, back)
-        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
-    Html(html).into_response()
-}
-
-fn render_message_with_html(
-    state: &AppState,
-    title: &str,
-    html_body: &str,
-    back: Option<(&str, &str)>,
-) -> Response {
-    let html = state
-        .templates
-        .render_message(title, None, Some(html_body), back)
-        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
-    Html(html).into_response()
-}
+use crate::routes::{message_response as render_message, message_response_with_html as render_message_with_html};
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 

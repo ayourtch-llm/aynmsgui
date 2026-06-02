@@ -6,6 +6,7 @@ use axum::{
     Router,
 };
 use futures::Stream;
+use serde::Serialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as TokioStreamExt;
 use axum::response::sse::{Event, Sse};
@@ -14,37 +15,47 @@ use tracing::{info, warn};
 use crate::sse::SseEvent;
 use crate::state::AppState;
 
+#[derive(Serialize)]
+struct SoftwareRow {
+    serial: String,
+    hostname: String,
+    version: String,
+}
+
+#[derive(Serialize)]
+struct SoftwareCtx {
+    rows: Vec<SoftwareRow>,
+}
+
+#[derive(Serialize)]
+struct UpgradeStartedCtx {
+    serial: String,
+    op_id: String,
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn list_software(State(state): State<AppState>) -> Response {
     let devices = state.seen_assets.read().await;
 
-    let rows: String = devices
+    let rows: Vec<SoftwareRow> = devices
         .values()
-        .map(|dev| {
-            format!(
-                "<tr><td>{serial}</td><td>{hostname}</td><td>{version}</td></tr>",
-                serial = html_escape(&dev.serial),
-                hostname = dev.hostname.as_deref().map(html_escape).unwrap_or_else(|| "-".to_string()),
-                version = dev.version.as_deref().map(html_escape).unwrap_or_else(|| "-".to_string()),
-            )
+        .map(|dev| SoftwareRow {
+            serial: dev.serial.clone(),
+            hostname: dev.hostname.clone().unwrap_or_else(|| "-".to_string()),
+            version: dev.version.clone().unwrap_or_else(|| "-".to_string()),
         })
         .collect();
 
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Software</title></head>
-<body>
-<h1>Software Versions</h1>
-<table>
-<tr><th>Serial</th><th>Hostname</th><th>Version</th></tr>
-{rows}
-</table>
-</body>
-</html>"#
-    );
-
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.software,
+            "Software Versions",
+            "",
+            &SoftwareCtx { rows },
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
@@ -91,21 +102,19 @@ async fn start_upgrade(
         tracker.remove_operation(&op_id_clone);
     });
 
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Upgrade Started</title></head>
-<body>
-<h1>Upgrade Started</h1>
-<p>Serial: {serial}</p>
-<p>Operation ID: {op_id}</p>
-<p><a href="/software/upgrade/{op_id}/progress">Watch progress (SSE)</a></p>
-</body>
-</html>"#,
-        serial = html_escape(&serial),
-        op_id = html_escape(&op_id),
-    ))
-    .into_response()
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.upgrade_started,
+            "Upgrade Started",
+            "",
+            &UpgradeStartedCtx {
+                serial: serial.clone(),
+                op_id: op_id.clone(),
+            },
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
 }
 
 async fn upgrade_progress(
@@ -135,15 +144,6 @@ pub fn routes() -> Router<AppState> {
         .route("/software", get(list_software))
         .route("/software/upgrade/{serial}", post(start_upgrade))
         .route("/software/upgrade/{op_id}/progress", get(upgrade_progress))
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

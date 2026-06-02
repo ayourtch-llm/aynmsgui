@@ -3,7 +3,7 @@ use axum::{
     http::StatusCode,
     response::{
         sse::{Event, Sse},
-        Html, IntoResponse, Response,
+        IntoResponse, Response,
     },
     routing::{get, post},
     Router,
@@ -12,6 +12,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tracing::{debug, info, warn};
 
+use crate::routes::message_response;
 use crate::sse::SseEvent;
 use crate::state::AppState;
 
@@ -33,7 +34,7 @@ pub async fn start_provision(
             warn!("start_provision called but cfggen_base_dir is not configured");
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>cfggen_base_dir is not configured</p></body></html>"),
+                message_response(&state, "Provision", "cfggen_base_dir is not configured", None),
             )
                 .into_response();
         }
@@ -46,12 +47,10 @@ pub async fn start_provision(
 
     if !flat_path.exists() && !dir_path.exists() {
         warn!(device = %name, "Device config not found for provisioning");
+        let msg = format!("Device config for '{}' not found", name);
         return (
             StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device config for '{}' not found</p></body></html>",
-                name
-            )),
+            message_response(&state, "Not Found", &msg, Some(("/devices", "Back to Devices"))),
         )
             .into_response();
     }
@@ -85,14 +84,13 @@ pub async fn start_provision(
 
     // 5. Return operation ID
     debug!(device = %name, op_id = %op_id, "Provisioning operation started");
-    (
-        StatusCode::OK,
-        Html(format!(
-            "<html><body><p>Provisioning started for '{}'. Operation ID: {}</p></body></html>",
-            name, op_id
-        )),
+    let msg = format!("Provisioning started for '{}'. Operation ID: {}", name, op_id);
+    message_response(
+        &state,
+        "Provisioning Started",
+        &msg,
+        Some((&format!("/provision/{op_id}/progress"), "Watch progress")),
     )
-        .into_response()
 }
 
 /// GET /provision/{op_id}/progress
@@ -107,12 +105,10 @@ pub async fn provision_progress(
         Some(rx) => rx,
         None => {
             warn!(op_id = %op_id, "SSE subscribe: operation not found");
+            let msg = format!("Operation '{}' not found", op_id);
             return (
                 StatusCode::NOT_FOUND,
-                Html(format!(
-                    "<html><body><p>Operation '{}' not found</p></body></html>",
-                    op_id
-                )),
+                message_response(&state, "Not Found", &msg, None),
             )
                 .into_response();
         }

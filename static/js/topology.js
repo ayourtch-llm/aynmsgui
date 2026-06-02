@@ -1283,16 +1283,19 @@
   // and the target so the eye can track the trip, hold briefly at the apex,
   // then dive in on the target. If the target is already on screen, skip
   // the fly-out and just zoom in.
-  function flyToDevice(id) {
+  function flyToDevice(id, opts) {
     if (!cy) return;
     var node = cy.getElementById(id);
     if (!node || !node.length) return;
-    // "No-no" shake if the user re-clicks the device that's already focused.
+    opts = opts || {};
+    // "No-no" shake if the user re-clicks the device that's already focused
+    // from the search dropdown. Double-click on the canvas always flies in
+    // (the user has clearly asked to zoom), so skip the shake there.
     var alreadyFocused = node.selected();
     cy.elements(":selected").unselect();
     node.select();
     renderDetail(node);
-    if (alreadyFocused) {
+    if (alreadyFocused && !opts.force) {
       shakeViewport();
       return;
     }
@@ -1422,7 +1425,7 @@
       var n = evt.target;
       var deviceId = n.hasClass("device") ? n.id() :
                      (n.isChild() ? n.parent().first().id() : null);
-      if (deviceId) flyToDevice(deviceId);
+      if (deviceId) flyToDevice(deviceId, { force: true });
     });
     // Persist positions after the user moves any node.
     cy.on("dragfree", "node", saveCurrentPositions);

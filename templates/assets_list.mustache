@@ -1,6 +1,8 @@
 <h1>{{heading}}</h1>
-<table>
-<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr>
+{{> quicksearch}}
+<table id="{{quicksearch_table_id}}">
+<thead><tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr></thead>
+<tbody>
 {{#rows}}
 <tr>
   <td><a href="/assets/{{serial}}">{{serial}}</a></td>
@@ -14,4 +16,5 @@
   <td>{{{logical_devices_html}}}</td>
 </tr>
 {{/rows}}
+</tbody>
 </table>

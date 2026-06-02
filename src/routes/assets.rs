@@ -37,6 +37,7 @@ struct AssetListRow {
 struct AssetListCtx {
     heading: String,
     rows: Vec<AssetListRow>,
+    quicksearch_table_id: &'static str,
 }
 
 #[derive(Serialize)]
@@ -179,6 +180,7 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
     let ctx = AssetListCtx {
         heading: "Asset Inventory".to_string(),
         rows,
+        quicksearch_table_id: "assets-table",
     };
     let html = state
         .templates
@@ -213,6 +215,7 @@ pub async fn list_seen_assets(State(state): State<AppState>) -> Response {
     let ctx = AssetListCtx {
         heading: "Seen Assets".to_string(),
         rows,
+        quicksearch_table_id: "assets-table",
     };
     let html = state
         .templates

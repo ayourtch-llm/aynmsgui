@@ -264,10 +264,16 @@
           "target-distance-from-node": 1,
         },
       },
+      // Bidirectional adjacency: swap to lighter "vee" arrows for both
+      // sides. Two filled triangles facing each other looked too heavy;
+      // two open vees give the same `><` directional read but visually
+      // lighter. Swap "vee" for "chevron", "circle", "diamond", or "tee"
+      // if you prefer a different style.
       {
         selector: "edge.bidirectional",
         style: {
-          "mid-source-arrow-shape": "triangle",
+          "mid-target-arrow-shape": "vee",
+          "mid-source-arrow-shape": "vee",
           "mid-source-arrow-color": "#666",
         },
       },

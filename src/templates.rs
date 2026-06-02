@@ -38,6 +38,7 @@ pub struct Templates {
     pub asset_detail: mustache::Template,
     pub devices_list: mustache::Template,
     pub device_detail: mustache::Template,
+    pub topology: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -72,6 +73,7 @@ impl Templates {
             asset_detail: load("asset_detail")?,
             devices_list: load("devices_list")?,
             device_detail: load("device_detail")?,
+            topology: load("topology")?,
             message: load("message")?,
         })
     }

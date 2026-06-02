@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use axum::{
     extract::State,
-    response::{IntoResponse, Json, Response},
+    response::{Html, IntoResponse, Json, Response},
     routing::get,
     Router,
 };
@@ -261,8 +261,20 @@ async fn topology_json(State(state): State<AppState>) -> Response {
     Json(resp).into_response()
 }
 
+async fn topology_page(State(state): State<AppState>) -> Response {
+    #[derive(Serialize)]
+    struct Empty {}
+    let html = state
+        .templates
+        .render_page(&state.templates.topology, "Topology", "", &Empty {})
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/topology/json", get(topology_json))
+    Router::new()
+        .route("/topology", get(topology_page))
+        .route("/topology/json", get(topology_json))
 }
 
 #[cfg(test)]

@@ -1,0 +1,17 @@
+<h1 class="list-page-heading">Topology</h1>
+<div id="topology-toolbar" style="margin: 0.5em 0; display: flex; align-items: center; gap: 8px;">
+  <button id="topology-refresh" type="button">Refresh</button>
+  <span id="topology-status" style="color:#666; font-size:0.9em;">loading…</span>
+  <span style="margin-left:auto; color:#666; font-size:0.85em;">
+    Gray = managed logical device · Arrow points TO the device that source sees.
+  </span>
+</div>
+<div style="display: flex; gap: 12px; align-items: stretch;">
+  <div id="cy" style="flex: 1; min-height: 800px; background: #fff; border: 1px solid #ddd; border-radius: 4px;"></div>
+  <aside id="topology-detail" style="width: 280px; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em;">
+    <em>Click a node for details.</em>
+  </aside>
+</div>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="/static/js/topology.js"></script>
+<script>window.addEventListener("load", function () { initTopology(); });</script>

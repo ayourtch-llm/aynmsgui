@@ -1340,20 +1340,41 @@
     // wider than the start. Clamp to a sane floor too.
     fitZoom = Math.max(0.1, Math.min(fitZoom, currentZoom * 0.95));
 
+    // Three-phase flight with NO stop at the apex:
+    //   P1 (ease-out, fast):     accelerate up to apex
+    //   P2 (linear, slow):       drift past the apex toward the target —
+    //                            keeps motion alive so the camera never
+    //                            comes to rest
+    //   P3 (ease-in, fast):      dive in on the target
+    // P2's target state is just past the apex, interpolated 20% of the way
+    // toward the final view — small enough that the eye still tracks the
+    // destination but enough motion that there's no pause.
+    var apexPan = { x: cy.width() / 2 - bbCx * fitZoom,
+                    y: cy.height() / 2 - bbCy * fitZoom };
+    var finalPan = panToTarget(inZoom);
+    var driftT = 0.20;
+    var driftZoom = fitZoom + (inZoom - fitZoom) * driftT;
+    var driftPan = { x: apexPan.x + (finalPan.x - apexPan.x) * driftT,
+                     y: apexPan.y + (finalPan.y - apexPan.y) * driftT };
     cy.animate(
-      { zoom: fitZoom,
-        pan: { x: cy.width() / 2 - bbCx * fitZoom,
-               y: cy.height() / 2 - bbCy * fitZoom } },
+      { zoom: fitZoom, pan: apexPan },
       {
-        duration: 450,
+        duration: 400,
         easing: "ease-out",
         complete: function () {
-          // Hang at the apex for a beat so the eye locks onto the target,
-          // then dive in.
-          setTimeout(function () {
-            cy.animate({ zoom: inZoom, pan: panToTarget(inZoom) },
-                       { duration: 500, easing: "ease-in-out" });
-          }, 280);
+          cy.animate(
+            { zoom: driftZoom, pan: driftPan },
+            {
+              duration: 350,
+              easing: "linear",
+              complete: function () {
+                cy.animate(
+                  { zoom: inZoom, pan: finalPan },
+                  { duration: 500, easing: "ease-in" }
+                );
+              },
+            }
+          );
         },
       }
     );

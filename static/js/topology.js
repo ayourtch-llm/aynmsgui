@@ -1090,15 +1090,18 @@
     var managedOnly = document.getElementById("topology-managed-only").checked;
     var newEls = buildElements(newData, managedOnly);
 
-    // Snapshot positions of every device that exists before the merge.
-    // After the merge runs (and alignChildrenInColumns repositions port
-    // children, which re-centers the parent's centroid), we restore each
-    // pre-existing device to exactly where it was. New devices are
-    // positioned separately via positionNewDevice / saved positions.
+    // Snapshot positions of EVERY existing node (devices + port-children)
+    // before the merge. After the merge runs and alignChildrenInColumns
+    // re-lays out all children into sorted columns, we restore each
+    // pre-existing node's exact position. This preserves any user-driven
+    // drags on port-children too — without snapshotting them, the column
+    // realignment would silently snap them back to the default layout.
+    // New nodes (devices or ports) added this round get positioned by
+    // positionNewDevice / alignChildrenInColumns.
     var prevPositions = {};
-    cy.nodes(".device").forEach(function (d) {
-      var p = d.position();
-      prevPositions[d.id()] = { x: p.x, y: p.y };
+    cy.nodes().forEach(function (n) {
+      var p = n.position();
+      prevPositions[n.id()] = { x: p.x, y: p.y };
     });
 
     // Build maps of new elements by id
@@ -1180,13 +1183,15 @@
     });
 
     // Realign port-children for any device whose port set changed.
+    // This positions BOTH pre-existing and new ports into the sorted
+    // column; the restore loop below puts pre-existing ones back to
+    // exactly where they were, so only the new ports keep the column
+    // placement.
     alignChildrenInColumns();
 
-    // Restore positions of every pre-existing device. alignChildrenInColumns
-    // may have shifted parents whose port set changed (because the parent's
-    // position is the centroid of its children, and the column re-centers
-    // them); restoring here guarantees that nothing in the existing layout
-    // moves as a side effect of the merge.
+    // Restore positions of every pre-existing node (device + port).
+    // Without this, alignChildrenInColumns would silently snap any
+    // user-dragged port back to the default sorted column.
     Object.keys(prevPositions).forEach(function (id) {
       var node = cy.getElementById(id);
       if (node.length) node.position(prevPositions[id]);

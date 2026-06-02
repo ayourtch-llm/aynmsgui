@@ -10,50 +10,64 @@ use serde::Serialize;
 use tracing::debug;
 
 use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
+use crate::routes::message_response;
 use crate::state::AppState;
 
 // ── View models ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-pub struct AssetView {
-    pub serial: String,
-    pub asset_tag: String,
-    pub vendor: String,
-    pub sku: String,
-    pub platform: String,
-    pub hostname: Option<String>,
-    pub last_ipv4: Option<String>,
-    pub last_ipv6: Option<String>,
-    pub last_seen: Option<String>,
+struct AssetListRow {
+    serial: String,
+    asset_tag: String,
+    vendor: String,
+    sku: String,
+    platform: String,
+    hostname: String,
+    has_ipv4: bool,
+    last_ipv4: String,
+    last_seen_ipv4: String,
+    has_ipv6: bool,
+    last_ipv6: String,
+    last_seen_ipv6: String,
+    /// Pre-rendered HTML for the device links cell (raw, embedded via {{{}}}).
+    logical_devices_html: String,
 }
 
 #[derive(Serialize)]
-pub struct AssetDetailView {
-    pub serial: String,
-    pub asset_tag: String,
-    pub vendor: String,
-    pub flavor: String,
-    pub sku: String,
-    pub platform: String,
-    pub mac_addresses: Vec<String>,
-    pub modules: Vec<ModuleView>,
-    pub hostname: Option<String>,
-    pub model: Option<String>,
-    pub last_ipv4: Option<String>,
-    pub last_ipv6: Option<String>,
-    pub last_seen_ipv4: Option<String>,
-    pub last_seen_ipv6: Option<String>,
-    pub first_seen: Option<String>,
-    pub registered_at: String,
-    /// HTML-formatted links to logical devices that reference this serial.
-    pub logical_devices_html: String,
+struct AssetListCtx {
+    heading: String,
+    rows: Vec<AssetListRow>,
 }
 
 #[derive(Serialize)]
-pub struct ModuleView {
-    pub sku: String,
-    pub serial: String,
-    pub mac_address: Option<String>,
+struct ModuleView {
+    sku: String,
+    serial: String,
+    mac_address: String,
+}
+
+#[derive(Serialize)]
+struct AssetDetailCtx {
+    serial: String,
+    asset_tag: String,
+    vendor: String,
+    flavor: String,
+    sku: String,
+    platform: String,
+    registered_at: String,
+    hostname: String,
+    model: String,
+    has_ipv4: bool,
+    last_ipv4: String,
+    last_seen_ipv4: String,
+    last_seen_ipv4_display: String,
+    has_ipv6: bool,
+    last_ipv6: String,
+    last_seen_ipv6: String,
+    last_seen_ipv6_display: String,
+    /// Pre-rendered HTML for the logical device links cell.
+    logical_devices_html: String,
+    modules: Vec<ModuleView>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -90,6 +104,7 @@ fn read_all_records(path: &std::path::Path) -> Vec<ayciam::AssetRecord> {
 }
 
 /// Format logical device names as HTML links, or "-" if none.
+/// Names are alphanumeric + dashes by convention; emit as-is (no escaping needed).
 fn format_device_links(serial_map: &IndexMap<String, Vec<String>>, serial: &str) -> String {
     match serial_map.get(serial) {
         Some(names) if !names.is_empty() => names
@@ -101,93 +116,51 @@ fn format_device_links(serial_map: &IndexMap<String, Vec<String>>, serial: &str)
     }
 }
 
-/// Format an IP address with a hover tooltip showing the last-seen timestamp.
-fn format_ip_with_timestamp(ip: Option<&str>, last_seen: Option<&str>) -> String {
-    match ip {
-        Some(addr) => {
-            let title = match last_seen {
-                Some(ts) => format!(" title=\"Last seen: {}\"", ts),
-                None => String::new(),
-            };
-            format!("<span{}>{}</span>", title, addr)
-        }
-        None => "-".to_string(),
-    }
-}
-
-/// Render the asset list table rows from filtered records.
-fn render_asset_rows(
+fn build_rows(
     records: &[ayciam::AssetRecord],
     seen_assets: &indexmap::IndexMap<String, aycallhome::Device>,
     serial_map: &IndexMap<String, Vec<String>>,
-) -> String {
+) -> Vec<AssetListRow> {
     records
         .iter()
         .map(|r| {
             let device = seen_assets.get(&r.serial_number);
-            let hostname = device
-                .and_then(|d| d.hostname.as_deref())
-                .unwrap_or("-");
-            let last_ipv4 = format_ip_with_timestamp(
-                device.and_then(|d| d.last_ipv4.as_deref()),
-                device
-                    .and_then(|d| d.last_seen_ipv4)
-                    .map(|t| t.to_rfc3339())
-                    .as_deref(),
-            );
-            let last_ipv6 = format_ip_with_timestamp(
-                device.and_then(|d| d.last_ipv6.as_deref()),
-                device
-                    .and_then(|d| d.last_seen_ipv6)
-                    .map(|t| t.to_rfc3339())
-                    .as_deref(),
-            );
-            let logical_devices = format_device_links(serial_map, &r.serial_number);
-            format!(
-                "<tr><td><a href=\"/assets/{serial}\">{serial}</a></td>\
-                 <td>{asset_tag}</td><td>{vendor}</td><td>{sku}</td>\
-                 <td>{platform}</td><td>{hostname}</td><td>{last_ipv4}</td><td>{last_ipv6}</td>\
-                 <td>{logical_devices}</td></tr>",
-                serial = r.serial_number,
-                asset_tag = r.asset_tag,
-                vendor = r.vendor,
-                sku = r.sku,
-                platform = r.platform.as_deref().unwrap_or("-"),
-                hostname = hostname,
-                last_ipv4 = last_ipv4,
-                last_ipv6 = last_ipv6,
-                logical_devices = logical_devices,
-            )
+            let last_seen_ipv4 = device
+                .and_then(|d| d.last_seen_ipv4)
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_default();
+            let last_seen_ipv6 = device
+                .and_then(|d| d.last_seen_ipv6)
+                .map(|t| t.to_rfc3339())
+                .unwrap_or_default();
+            let last_ipv4 = device.and_then(|d| d.last_ipv4.clone());
+            let last_ipv6 = device.and_then(|d| d.last_ipv6.clone());
+            AssetListRow {
+                serial: r.serial_number.clone(),
+                asset_tag: r.asset_tag.clone(),
+                vendor: r.vendor.clone(),
+                sku: r.sku.clone(),
+                platform: r.platform.clone().unwrap_or_else(|| "-".to_string()),
+                hostname: device
+                    .and_then(|d| d.hostname.clone())
+                    .unwrap_or_else(|| "-".to_string()),
+                has_ipv4: last_ipv4.is_some(),
+                last_ipv4: last_ipv4.unwrap_or_default(),
+                last_seen_ipv4,
+                has_ipv6: last_ipv6.is_some(),
+                last_ipv6: last_ipv6.unwrap_or_default(),
+                last_seen_ipv6,
+                logical_devices_html: format_device_links(serial_map, &r.serial_number),
+            }
         })
         .collect()
-}
-
-/// Render the full asset list page HTML.
-fn render_asset_list_page(title: &str, heading: &str, rows: &str) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>{title}</title></head>
-<body>
-<h1>{heading}</h1>
-<table>
-<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr>
-{rows}
-</table>
-</body>
-</html>"#,
-        title = title,
-        heading = heading,
-        rows = rows,
-    )
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 pub async fn list_assets(State(state): State<AppState>) -> Response {
     let (Some(_cache), Some(inv_path)) = (&state.asset_cache, &state.asset_inventory_path) else {
-        let html = "<html><body><p>Asset inventory not configured</p></body></html>";
-        return Html(html).into_response();
+        return message_response(&state, "Assets", "Asset inventory not configured", None);
     };
 
     debug!(path = %inv_path.display(), "Loading all assets for list view");
@@ -202,15 +175,21 @@ pub async fn list_assets(State(state): State<AppState>) -> Response {
         .map(|base| serial_to_device_names(&load_all_device_configs(base)))
         .unwrap_or_default();
 
-    let rows = render_asset_rows(&records, &seen_assets, &serial_map);
-    let html = render_asset_list_page("Assets", "Asset Inventory", &rows);
+    let rows = build_rows(&records, &seen_assets, &serial_map);
+    let ctx = AssetListCtx {
+        heading: "Asset Inventory".to_string(),
+        rows,
+    };
+    let html = state
+        .templates
+        .render_page(&state.templates.assets_list, "Assets", "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
 pub async fn list_seen_assets(State(state): State<AppState>) -> Response {
     let (Some(_cache), Some(inv_path)) = (&state.asset_cache, &state.asset_inventory_path) else {
-        let html = "<html><body><p>Asset inventory not configured</p></body></html>";
-        return Html(html).into_response();
+        return message_response(&state, "Seen Assets", "Asset inventory not configured", None);
     };
 
     debug!(path = %inv_path.display(), "Loading seen assets for list view");
@@ -218,7 +197,6 @@ pub async fn list_seen_assets(State(state): State<AppState>) -> Response {
     let records = read_all_records(inv_path);
     let seen_assets = state.seen_assets.read().await;
 
-    // Filter to only assets that have been seen
     let seen_records: Vec<ayciam::AssetRecord> = records
         .into_iter()
         .filter(|r| seen_assets.contains_key(&r.serial_number))
@@ -231,8 +209,15 @@ pub async fn list_seen_assets(State(state): State<AppState>) -> Response {
         .map(|base| serial_to_device_names(&load_all_device_configs(base)))
         .unwrap_or_default();
 
-    let rows = render_asset_rows(&seen_records, &seen_assets, &serial_map);
-    let html = render_asset_list_page("Seen Assets", "Seen Assets", &rows);
+    let rows = build_rows(&seen_records, &seen_assets, &serial_map);
+    let ctx = AssetListCtx {
+        heading: "Seen Assets".to_string(),
+        rows,
+    };
+    let html = state
+        .templates
+        .render_page(&state.templates.assets_list, "Seen Assets", "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
@@ -243,7 +228,7 @@ pub async fn asset_detail(
     let Some(cache) = &state.asset_cache else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Html("<html><body><p>Asset inventory not configured</p></body></html>"),
+            message_response(&state, "Assets", "Asset inventory not configured", None),
         )
             .into_response();
     };
@@ -252,12 +237,10 @@ pub async fn asset_detail(
 
     let records = cache.lookup_by_serial(&serial);
     let Some(record) = records.into_iter().next() else {
+        let msg = format!("Asset {} not found", serial);
         return (
             StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Asset {} not found</p></body></html>",
-                serial
-            )),
+            message_response(&state, "Not Found", &msg, Some(("/assets", "Back to Assets"))),
         )
             .into_response();
     };
@@ -265,7 +248,6 @@ pub async fn asset_detail(
     let seen_assets = state.seen_assets.read().await;
     let device = seen_assets.get(&record.serial_number);
 
-    // Build serial → logical device name(s) mapping
     let serial_map = state
         .config
         .cfggen_base_dir
@@ -279,99 +261,61 @@ pub async fn asset_detail(
         .map(|m| ModuleView {
             sku: m.sku.clone(),
             serial: m.serial_number.clone(),
-            mac_address: m.mac_address.clone(),
+            mac_address: m.mac_address.clone().unwrap_or_else(|| "-".to_string()),
         })
         .collect();
 
-    let detail = AssetDetailView {
+    let last_ipv4 = device.and_then(|d| d.last_ipv4.clone());
+    let last_ipv6 = device.and_then(|d| d.last_ipv6.clone());
+    let last_seen_ipv4 = device
+        .and_then(|d| d.last_seen_ipv4)
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default();
+    let last_seen_ipv6 = device
+        .and_then(|d| d.last_seen_ipv6)
+        .map(|t| t.to_rfc3339())
+        .unwrap_or_default();
+
+    let ctx = AssetDetailCtx {
         serial: record.serial_number.clone(),
         asset_tag: record.asset_tag.clone(),
         vendor: record.vendor.clone(),
         flavor: record.flavor.clone(),
         sku: record.sku.clone(),
         platform: record.platform.clone().unwrap_or_default(),
-        mac_addresses: record.mac_addresses.clone(),
-        modules,
-        hostname: device.and_then(|d| d.hostname.clone()),
-        model: device.and_then(|d| d.model.clone()),
-        last_ipv4: device.and_then(|d| d.last_ipv4.clone()),
-        last_ipv6: device.and_then(|d| d.last_ipv6.clone()),
-        last_seen_ipv4: device
-            .and_then(|d| d.last_seen_ipv4)
-            .map(|t| t.to_rfc3339()),
-        last_seen_ipv6: device
-            .and_then(|d| d.last_seen_ipv6)
-            .map(|t| t.to_rfc3339()),
-        first_seen: device
-            .and_then(|d| d.first_seen)
-            .map(|t| t.to_rfc3339()),
         registered_at: record.registered_at.clone(),
+        hostname: device
+            .and_then(|d| d.hostname.clone())
+            .unwrap_or_else(|| "-".to_string()),
+        model: device
+            .and_then(|d| d.model.clone())
+            .unwrap_or_else(|| "-".to_string()),
+        has_ipv4: last_ipv4.is_some(),
+        last_ipv4: last_ipv4.unwrap_or_default(),
+        last_seen_ipv4_display: if last_seen_ipv4.is_empty() {
+            "-".to_string()
+        } else {
+            last_seen_ipv4.clone()
+        },
+        last_seen_ipv4,
+        has_ipv6: last_ipv6.is_some(),
+        last_ipv6: last_ipv6.unwrap_or_default(),
+        last_seen_ipv6_display: if last_seen_ipv6.is_empty() {
+            "-".to_string()
+        } else {
+            last_seen_ipv6.clone()
+        },
+        last_seen_ipv6,
         logical_devices_html: format_device_links(&serial_map, &record.serial_number),
+        modules,
     };
 
-    let html = render_asset_detail(&detail);
+    let title = format!("Asset {}", record.serial_number);
+    let html = state
+        .templates
+        .render_page(&state.templates.asset_detail, &title, "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
-}
-
-fn render_asset_detail(d: &AssetDetailView) -> String {
-    let modules_html: String = d
-        .modules
-        .iter()
-        .map(|m| {
-            format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
-                m.sku,
-                m.serial,
-                m.mac_address.as_deref().unwrap_or("-")
-            )
-        })
-        .collect();
-
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Asset {serial}</title></head>
-<body>
-<h1>Asset Detail: {serial}</h1>
-<table>
-<tr><th>Serial</th><td>{serial}</td></tr>
-<tr><th>Asset Tag</th><td>{asset_tag}</td></tr>
-<tr><th>Vendor</th><td>{vendor}</td></tr>
-<tr><th>Flavor</th><td>{flavor}</td></tr>
-<tr><th>SKU</th><td>{sku}</td></tr>
-<tr><th>Platform</th><td>{platform}</td></tr>
-<tr><th>Registered At</th><td>{registered_at}</td></tr>
-<tr><th>Hostname</th><td>{hostname}</td></tr>
-<tr><th>Model</th><td>{model}</td></tr>
-<tr><th>Last IPv4</th><td>{last_ipv4}</td></tr>
-<tr><th>Last Seen IPv4</th><td>{last_seen_ipv4}</td></tr>
-<tr><th>Last IPv6</th><td>{last_ipv6}</td></tr>
-<tr><th>Last Seen IPv6</th><td>{last_seen_ipv6}</td></tr>
-<tr><th>Logical Device(s)</th><td>{logical_devices}</td></tr>
-</table>
-<h2>Modules</h2>
-<table>
-<tr><th>SKU</th><th>Serial</th><th>MAC</th></tr>
-{modules}
-</table>
-</body>
-</html>"#,
-        serial = d.serial,
-        asset_tag = d.asset_tag,
-        vendor = d.vendor,
-        flavor = d.flavor,
-        sku = d.sku,
-        platform = d.platform,
-        registered_at = d.registered_at,
-        hostname = d.hostname.as_deref().unwrap_or("-"),
-        model = d.model.as_deref().unwrap_or("-"),
-        last_ipv4 = format_ip_with_timestamp(d.last_ipv4.as_deref(), d.last_seen_ipv4.as_deref()),
-        last_seen_ipv4 = d.last_seen_ipv4.as_deref().unwrap_or("-"),
-        last_ipv6 = format_ip_with_timestamp(d.last_ipv6.as_deref(), d.last_seen_ipv6.as_deref()),
-        last_seen_ipv6 = d.last_seen_ipv6.as_deref().unwrap_or("-"),
-        logical_devices = d.logical_devices_html,
-        modules = modules_html,
-    )
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────

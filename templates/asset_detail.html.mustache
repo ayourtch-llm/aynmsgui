@@ -1,0 +1,24 @@
+<h1>Asset Detail: {{serial}}</h1>
+<table>
+<tr><th>Serial</th><td>{{serial}}</td></tr>
+<tr><th>Asset Tag</th><td>{{asset_tag}}</td></tr>
+<tr><th>Vendor</th><td>{{vendor}}</td></tr>
+<tr><th>Flavor</th><td>{{flavor}}</td></tr>
+<tr><th>SKU</th><td>{{sku}}</td></tr>
+<tr><th>Platform</th><td>{{platform}}</td></tr>
+<tr><th>Registered At</th><td>{{registered_at}}</td></tr>
+<tr><th>Hostname</th><td>{{hostname}}</td></tr>
+<tr><th>Model</th><td>{{model}}</td></tr>
+<tr><th>Last IPv4</th><td>{{#has_ipv4}}<span title="Last seen: {{last_seen_ipv4}}">{{last_ipv4}}</span>{{/has_ipv4}}{{^has_ipv4}}-{{/has_ipv4}}</td></tr>
+<tr><th>Last Seen IPv4</th><td>{{last_seen_ipv4_display}}</td></tr>
+<tr><th>Last IPv6</th><td>{{#has_ipv6}}<span title="Last seen: {{last_seen_ipv6}}">{{last_ipv6}}</span>{{/has_ipv6}}{{^has_ipv6}}-{{/has_ipv6}}</td></tr>
+<tr><th>Last Seen IPv6</th><td>{{last_seen_ipv6_display}}</td></tr>
+<tr><th>Logical Device(s)</th><td>{{{logical_devices_html}}}</td></tr>
+</table>
+<h2>Modules</h2>
+<table>
+<tr><th>SKU</th><th>Serial</th><th>MAC</th></tr>
+{{#modules}}
+<tr><td>{{sku}}</td><td>{{serial}}</td><td>{{mac_address}}</td></tr>
+{{/modules}}
+</table>

@@ -1,0 +1,17 @@
+<h1>{{heading}}</h1>
+<table>
+<tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr>
+{{#rows}}
+<tr>
+  <td><a href="/assets/{{serial}}">{{serial}}</a></td>
+  <td>{{asset_tag}}</td>
+  <td>{{vendor}}</td>
+  <td>{{sku}}</td>
+  <td>{{platform}}</td>
+  <td>{{hostname}}</td>
+  <td>{{#has_ipv4}}<span title="Last seen: {{last_seen_ipv4}}">{{last_ipv4}}</span>{{/has_ipv4}}{{^has_ipv4}}-{{/has_ipv4}}</td>
+  <td>{{#has_ipv6}}<span title="Last seen: {{last_seen_ipv6}}">{{last_ipv6}}</span>{{/has_ipv6}}{{^has_ipv6}}-{{/has_ipv6}}</td>
+  <td>{{{logical_devices_html}}}</td>
+</tr>
+{{/rows}}
+</table>

@@ -31,6 +31,8 @@ pub struct Templates {
     pub retrieve_result: mustache::Template,
     pub apply_confirm: mustache::Template,
     pub apply_result: mustache::Template,
+    pub assets_list: mustache::Template,
+    pub asset_detail: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -58,6 +60,8 @@ impl Templates {
             retrieve_result: compile(&dir.join("retrieve_result.html.mustache"))?,
             apply_confirm: compile(&dir.join("apply_confirm.html.mustache"))?,
             apply_result: compile(&dir.join("apply_result.html.mustache"))?,
+            assets_list: compile(&dir.join("assets_list.html.mustache"))?,
+            asset_detail: compile(&dir.join("asset_detail.html.mustache"))?,
             message: compile(&dir.join("message.html.mustache"))?,
         })
     }

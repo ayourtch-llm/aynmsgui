@@ -1,7 +1,9 @@
-<h1 class="list-page-heading">Topology</h1>
-<div id="topology-toolbar" style="margin: 0.5em 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+<div class="topology-page">
+<h1 class="topology-title">Topology</h1>
+<div id="topology-toolbar">
   <button id="topology-refresh" type="button">Refresh</button>
   <button id="topology-reset-layout" type="button" title="Clear saved positions and re-run auto-layout">Reset layout</button>
+  <button id="topology-clear-history" type="button" title="Wipe every cached device/edge (including stale ones)">Clear history</button>
   <label><input type="checkbox" id="topology-managed-only"> Managed only</label>
   <label>Layout:
     <select id="topology-layout">
@@ -21,11 +23,10 @@
     Gray = managed · arrow points TO the device source sees · ctrl+right-click cycles BFS selection.
   </span>
 </div>
-<div style="display: flex; gap: 12px; align-items: stretch;">
-  <div id="cy" style="flex: 1; min-height: 800px; background: #fff; border: 1px solid #ddd; border-radius: 4px;"></div>
-  <aside id="topology-detail" style="width: 280px; padding: 12px; background: #fff; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9em;">
-    <em>Click a node for details.</em>
-  </aside>
+<div class="topology-body">
+  <div id="cy"></div>
+  <aside id="topology-detail"><em>Click a node for details.</em></aside>
+</div>
 </div>
 <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>

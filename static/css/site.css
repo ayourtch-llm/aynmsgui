@@ -337,6 +337,58 @@ details summary { cursor: pointer; font-weight: 600; color: #1a5276; }
 .quicksearch input { padding: 3px 6px; margin: 0; }
 .quicksearch #totalMatches { margin-left: auto; color: #666; font-size: 0.9em; }
 
+/* TOPOLOGY PAGE: break out of .main and fill the viewport. The page
+ * wrapper sizes itself to the visible viewport (minus the page header
+ * above .main), flexes vertically so the cy canvas + side panel
+ * stretch into all remaining space. */
+.topology-page {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    /* The site nav (header + menubar) is ~80-110px depending on screen
+     * size; this is a fixed approximation for the available remaining
+     * viewport height. */
+    height: calc(100vh - 110px);
+    padding: 0 16px;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.topology-page .topology-title {
+    margin: 6px 0;
+    flex: 0 0 auto;
+}
+.topology-page #topology-toolbar {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    flex: 0 0 auto;
+}
+.topology-page .topology-body {
+    flex: 1 1 auto;
+    display: flex;
+    gap: 12px;
+    min-height: 0;
+}
+.topology-page #cy {
+    flex: 1 1 auto;
+    min-height: 0;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+.topology-page #topology-detail {
+    flex: 0 0 280px;
+    overflow-y: auto;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+
 /* COLUMN RESIZE handles (injected by colresize.js into each <th>) */
 .col-resize-handle {
     position: absolute;

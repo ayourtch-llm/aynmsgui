@@ -1349,9 +1349,21 @@
     render();
   }
 
+  function clearHistory() {
+    if (!confirm("Clear all cached topology history? This wipes every gray (stale) device and edge from the local cache.")) return;
+    clearShadow();
+    if (cy) {
+      cy.elements(".stale").remove();
+      saveCurrentPositions();
+    }
+    var panel = document.getElementById("topology-detail");
+    if (panel) panel.innerHTML = "<em>Click a node for details.</em>";
+  }
+
   window.initTopology = function () {
     document.getElementById("topology-refresh").addEventListener("click", load);
     document.getElementById("topology-reset-layout").addEventListener("click", resetLayout);
+    document.getElementById("topology-clear-history").addEventListener("click", clearHistory);
     document.getElementById("topology-managed-only").addEventListener("change", render);
     // Changing the layout choice is an explicit "re-run" — drop saved
     // positions so the new layout actually applies.

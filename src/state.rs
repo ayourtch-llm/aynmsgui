@@ -97,6 +97,7 @@ pub struct AppState {
     pub assignments: Arc<RwLock<AssignmentMap>>,
     pub operations: Arc<RwLock<crate::sse::OperationTracker>>,
     pub device_credentials: Arc<RwLock<DeviceCredentials>>,
+    pub templates: Arc<crate::templates::Templates>,
 }
 
 /// Format an IP address + port as an SSH target string.
@@ -257,6 +258,8 @@ impl AppState {
             });
         let sessions = SessionStore::with_persistence(&config.user_sessions_dir);
         let device_credentials = DeviceCredentials::load(&config.device_credentials_file, &config);
+        let templates = crate::templates::Templates::load_default()
+            .unwrap_or_else(|e| panic!("Failed to load templates: {e}"));
         Self {
             config: Arc::new(config),
             htpasswd: Arc::new(htpasswd),
@@ -267,6 +270,7 @@ impl AppState {
             assignments: Arc::new(RwLock::new(assignments)),
             operations: Arc::new(RwLock::new(crate::sse::OperationTracker::new())),
             device_credentials: Arc::new(RwLock::new(device_credentials)),
+            templates: Arc::new(templates),
         }
     }
 

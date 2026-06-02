@@ -11,8 +11,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
 
 # Templates
-askama = "0.12"
-askama_axum = "0.4"
+mustache = { git = "https://github.com/ayourtch/rust-mustache" }
 
 # Auth
 bcrypt = "0.16"

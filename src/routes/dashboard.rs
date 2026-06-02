@@ -4,9 +4,19 @@ use axum::{
     routing::get,
     Router,
 };
+use serde::Serialize;
 use tracing::debug;
 
 use crate::state::AppState;
+
+#[derive(Serialize)]
+struct DashboardCtx {
+    asset_count: String,
+    seen_count: usize,
+    device_count: String,
+    assignment_count: usize,
+    config_count: String,
+}
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -65,55 +75,18 @@ pub async fn dashboard(State(state): State<AppState>) -> Html<String> {
         "Dashboard counts"
     );
 
-    let content = format!(
-        r#"<div class="cards">
-  <a class="card" href="/assets">
-    <div class="count">{asset_count}</div>
-    <div class="label">Assets</div>
-  </a>
-  <a class="card" href="/seen">
-    <div class="count">{seen_count}</div>
-    <div class="label">Seen Assets</div>
-  </a>
-  <a class="card" href="/devices">
-    <div class="count">{device_count}</div>
-    <div class="label">Logical Devices</div>
-  </a>
-  <a class="card" href="/assignments">
-    <div class="count">{assignment_count}</div>
-    <div class="label">Assignments</div>
-  </a>
-  <a class="card" href="/diff">
-    <div class="count">{config_count}</div>
-    <div class="label">Pending Diffs</div>
-  </a>
-</div>
-<h2 style="margin-top:2rem;">Actions</h2>
-<div class="cards">
-  <a class="card" href="/import">
-    <div class="label">Import Device</div>
-  </a>
-  <a class="card" href="/extract">
-    <div class="label">Extract Config</div>
-  </a>
-  <a class="card" href="/extract-sw">
-    <div class="label">Extract Software</div>
-  </a>
-  <a class="card" href="/retrieve">
-    <div class="label">Retrieve Configs</div>
-  </a>
-  <a class="card" href="/settings/credentials">
-    <div class="label">Connection Settings</div>
-  </a>
-</div>"#,
-        asset_count = asset_count,
-        seen_count = seen_count,
-        device_count = device_count,
-        assignment_count = assignment_count,
-        config_count = config_count,
-    );
+    let ctx = DashboardCtx {
+        asset_count,
+        seen_count,
+        device_count,
+        assignment_count,
+        config_count,
+    };
 
-    let html = crate::routes::page_html("Dashboard", "", &content);
+    let html = state
+        .templates
+        .render_page(&state.templates.dashboard, "Dashboard", "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html)
 }
 

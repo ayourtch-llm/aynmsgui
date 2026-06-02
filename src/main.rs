@@ -8,6 +8,7 @@ mod routes;
 mod sse;
 mod state;
 mod switches_poll;
+mod templates;
 
 use std::path::Path;
 use clap::Parser;

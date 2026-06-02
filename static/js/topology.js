@@ -18,6 +18,55 @@
   var cy = null;
   var lastData = null;
 
+  // localStorage key for persisted node positions. Per-origin → effectively
+  // per-browser-per-user-account; explicitly cleared by the Reset button.
+  var POS_KEY = "aynmsgui:topology:positions";
+
+  function loadSavedPositions() {
+    try {
+      var raw = localStorage.getItem(POS_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveCurrentPositions() {
+    if (!cy) return;
+    var out = {};
+    cy.nodes().forEach(function (n) {
+      var p = n.position();
+      out[n.id()] = { x: p.x, y: p.y };
+    });
+    try {
+      localStorage.setItem(POS_KEY, JSON.stringify(out));
+    } catch (e) {
+      console.warn("topology: failed to save positions", e);
+    }
+  }
+
+  function clearSavedPositions() {
+    try {
+      localStorage.removeItem(POS_KEY);
+    } catch (e) {}
+  }
+
+  // Apply saved positions to nodes that have them. Returns true if EVERY
+  // node was placed from saved state (i.e. we can skip the auto-layout).
+  function applySavedPositions(saved) {
+    if (!saved) return false;
+    var allPlaced = true;
+    cy.nodes().forEach(function (n) {
+      var p = saved[n.id()];
+      if (p && typeof p.x === "number" && typeof p.y === "number") {
+        n.position({ x: p.x, y: p.y });
+      } else {
+        allPlaced = false;
+      }
+    });
+    return allPlaced;
+  }
+
   function escapeHtml(s) {
     return String(s || "")
       .replace(/&/g, "&amp;")
@@ -434,7 +483,22 @@
     cy.on("unselect", function () {
       cy.elements(".highlighted").removeClass("highlighted");
     });
-    fitAndLayout();
+    // Persist positions after the user moves any node.
+    cy.on("dragfree", "node", saveCurrentPositions);
+
+    // If we have saved positions for every visible node, use them and
+    // skip the auto-layout (preserves the user's manual arrangement
+    // across reloads). Any node missing from the saved set falls back
+    // to a fresh layout pass for the whole graph.
+    var saved = loadSavedPositions();
+    if (saved && applySavedPositions(saved)) {
+      cy.fit(undefined, 30);
+    } else {
+      fitAndLayout();
+      // Seed the storage with the freshly-computed layout so subsequent
+      // reloads pick it up before any user drag.
+      saveCurrentPositions();
+    }
     var when = lastData.fetched_at
       ? new Date(lastData.fetched_at).toLocaleTimeString()
       : "never";
@@ -460,10 +524,22 @@
       });
   }
 
+  function resetLayout() {
+    if (!confirm("Clear saved layout and re-run the auto-layout?")) return;
+    clearSavedPositions();
+    render();
+  }
+
   window.initTopology = function () {
     document.getElementById("topology-refresh").addEventListener("click", load);
+    document.getElementById("topology-reset-layout").addEventListener("click", resetLayout);
     document.getElementById("topology-managed-only").addEventListener("change", render);
-    document.getElementById("topology-layout").addEventListener("change", render);
+    // Changing the layout choice is an explicit "re-run" — drop saved
+    // positions so the new layout actually applies.
+    document.getElementById("topology-layout").addEventListener("change", function () {
+      clearSavedPositions();
+      render();
+    });
     load();
   };
 })();

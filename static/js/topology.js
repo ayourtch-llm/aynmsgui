@@ -241,12 +241,13 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
-      // End arrows, pushed 8px outside the port box outline so they're
-      // visibly separated from the box (not crammed up against it like
-      // the original 1px gap). For bidirectional edges, both source and
-      // target end arrows point outward at their respective ports —
-      // unambiguously "both ends see each other", with no risk of two
-      // mid-arrows pointing at one another.
+      // Arrows sit ALONG the line (not crammed into the port box border),
+      // but off-center by ~25px from each port. The "distance-from-node"
+      // shortens the visible line; the arrow then renders at the line's
+      // endpoint, with its tip naturally pointing outward toward the port.
+      // For bidirectional edges, source and target arrows sit symmetrically
+      // off-center on opposite sides of the midpoint — pointing outward at
+      // their own ports, no risk of facing each other.
       {
         selector: "edge",
         style: {
@@ -258,8 +259,8 @@
           "arrow-scale": 1.4,
           "source-endpoint": "outside-to-line",
           "target-endpoint": "outside-to-line",
-          "source-distance-from-node": 8,
-          "target-distance-from-node": 8,
+          "source-distance-from-node": 25,
+          "target-distance-from-node": 25,
         },
       },
       {

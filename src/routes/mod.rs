@@ -13,6 +13,7 @@ pub mod provision;
 pub mod retrieve;
 pub mod settings;
 pub mod software;
+pub mod topology;
 
 use axum::{middleware, Router};
 use axum::response::{Html, IntoResponse, Response};
@@ -150,6 +151,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(retrieve::routes())
         .merge(operations::routes())
         .merge(settings::routes())
+        .merge(topology::routes())
         .layer(middleware::from_fn_with_state(sessions, auth_middleware));
 
     Router::new()

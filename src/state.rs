@@ -98,6 +98,9 @@ pub struct AppState {
     pub operations: Arc<RwLock<crate::sse::OperationTracker>>,
     pub device_credentials: Arc<RwLock<DeviceCredentials>>,
     pub templates: Arc<crate::templates::Templates>,
+    /// Most recent CDP-neighbors-sweep poll result, used by /topology/json.
+    /// `None` until the first poll completes (or if the poller is disabled).
+    pub cdp_snapshot: Arc<RwLock<Option<crate::cdp_sweep::CdpSnapshot>>>,
 }
 
 /// Format an IP address + port as an SSH target string.
@@ -271,6 +274,7 @@ impl AppState {
             operations: Arc::new(RwLock::new(crate::sse::OperationTracker::new())),
             device_credentials: Arc::new(RwLock::new(device_credentials)),
             templates: Arc::new(templates),
+            cdp_snapshot: Arc::new(RwLock::new(None)),
         }
     }
 

@@ -10,26 +10,45 @@
 
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
-struct CdpEntry {
+/// One CDP-neighbors-sweep row: a single adjacency from a local switch port
+/// to one of its CDP neighbors. Public because the topology endpoint reads
+/// the cached snapshot too.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CdpEntry {
+    #[serde(rename = "Local_Asset_Inventory")]
+    pub local_asset_inventory: Option<String>,
+    #[serde(rename = "Local_Host")]
+    pub local_host: Option<String>,
+    #[serde(rename = "Local_Interface")]
+    pub local_interface: Option<String>,
     #[serde(rename = "Remote_Host")]
-    remote_host: Option<String>,
+    pub remote_host: Option<String>,
     #[serde(rename = "Remote_IPAddress")]
-    remote_ipaddress: Option<String>,
+    pub remote_ipaddress: Option<String>,
+    #[serde(rename = "Remote_Interface")]
+    pub remote_interface: Option<String>,
     #[serde(rename = "Remote_Platform")]
-    remote_platform: Option<String>,
+    pub remote_platform: Option<String>,
     #[serde(rename = "Remote_Version")]
-    remote_version: Option<String>,
+    pub remote_version: Option<String>,
+}
+
+/// A cached snapshot of the last CDP sweep poll, stored on AppState so the
+/// topology endpoint can render without re-fetching.
+#[derive(Debug, Clone)]
+pub struct CdpSnapshot {
+    pub entries: Vec<CdpEntry>,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Strip the FQDN suffix, leaving just the first label (e.g.
 /// "AD6-X014-S1249.a3s.alpehuzes.nl" -> "AD6-X014-S1249").
-fn canonical_hostname(host: &str) -> &str {
+pub fn canonical_hostname(host: &str) -> &str {
     host.split('.').next().unwrap_or(host).trim()
 }
 
@@ -54,6 +73,12 @@ pub async fn poll_once(
 
     let entries: Vec<CdpEntry> = resp.json().await?;
     let now = chrono::Utc::now();
+
+    // Cache the raw entries so /topology/json can render without re-fetching.
+    *state.cdp_snapshot.write().await = Some(CdpSnapshot {
+        entries: entries.clone(),
+        fetched_at: now,
+    });
 
     let mut matched = 0usize;
     let mut inserted = 0usize;

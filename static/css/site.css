@@ -6,6 +6,12 @@ body {
     margin: 0px;
     padding: 0px;
     color: #2d2d2d;
+    /* Suppress the body-level horizontal scrollbar that the (50% - 50vw)
+     * trick on .table-scroll can induce when a vertical scrollbar exists
+     * (100vw includes the scrollbar width). The .table-scroll element
+     * has its own overflow-x: auto, so per-table horizontal scrolling
+     * still works. */
+    overflow-x: hidden;
 }
 
 input, select {
@@ -125,14 +131,25 @@ li.dropdown { display: inline-block; position: relative; }
 /* MAIN CONTENT */
 .main {
     padding: 24px 24px;
-    max-width: 1400px;
+    max-width: 1800px;
     margin: 0 auto;
 }
 
-/* A table wrapped in .table-scroll scrolls horizontally if its content
- * exceeds the container — used by list pages so colresize.js can grow
- * a column past the .main width without pushing the page layout. */
-.table-scroll { overflow-x: auto; }
+/* A list table wrapped in .table-scroll breaks out of .main's centered
+ * column to span the full viewport width, and scrolls horizontally if
+ * its content (post colresize) exceeds even that.
+ *
+ * The (50% - 50vw) margin shifts the wrapper from its centered position
+ * to the viewport's left edge regardless of how wide .main is; 100vw
+ * then refills the row. Padding restores the 24px gutter that .main
+ * would normally provide. */
+.table-scroll {
+    overflow-x: auto;
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    padding: 0 24px;
+    box-sizing: border-box;
+}
 
 /* TABLE STYLES */
 table {

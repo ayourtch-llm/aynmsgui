@@ -141,25 +141,47 @@
       });
     });
 
-    // 4. Emit one edge per CDP adjacency. Bidirectional links naturally
-    //    become two parallel edges (A→B and B→A); Cytoscape's bezier
-    //    curve-style auto-offsets multiple edges between the same node
-    //    pair into side-by-side curves. Each curve carries a single
-    //    mid-arrow pointing toward its own target — i.e. arrows point
-    //    OUTWARD at their respective ports, on separate parallel lines.
+    // 4. Dedupe CDP adjacencies by the unordered port pair (CDP usually
+    //    reports both directions for the same physical link). The merged
+    //    edge gets a "bidirectional" class which the style turns into a
+    //    second mid-arrow at the source side, so a single line carries
+    //    two arrows offset along it — both pointing outward at their
+    //    respective ports.
+    var pairs = new Map();
     data.edges.forEach(function (e) {
       if (!visibleDevices.has(e.source) || !visibleDevices.has(e.target)) return;
+      var src = portChildId(e.source, e.sport);
+      var tgt = portChildId(e.target, e.tport);
+      var key = src < tgt ? src + "|" + tgt : tgt + "|" + src;
+      var existing = pairs.get(key);
+      if (existing) {
+        existing.bidirectional = true;
+        return;
+      }
+      pairs.set(key, {
+        id: e.id,
+        source: src,
+        target: tgt,
+        sport: e.sport,
+        tport: e.tport,
+        sourceDevice: e.source,
+        targetDevice: e.target,
+        bidirectional: false,
+      });
+    });
+    pairs.forEach(function (p) {
       els.push({
         group: "edges",
         data: {
-          id: e.id,
-          source: portChildId(e.source, e.sport),
-          target: portChildId(e.target, e.tport),
-          sport: e.sport,
-          tport: e.tport,
-          _sourceDevice: e.source,
-          _targetDevice: e.target,
+          id: p.id,
+          source: p.source,
+          target: p.target,
+          sport: p.sport,
+          tport: p.tport,
+          _sourceDevice: p.sourceDevice,
+          _targetDevice: p.targetDevice,
         },
+        classes: p.bidirectional ? "bidirectional" : "",
       });
     });
 
@@ -220,12 +242,11 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
-      // Line runs all the way to the port box; the arrow triangle floats
-      // along the line via mid-target-arrow (positioned ~75% along the
-      // edge, pointing toward target). For bidirectional CDP adjacencies,
-      // we emit two edges (A→B and B→A) which Cytoscape auto-offsets into
-      // parallel curves — each curve has its own mid-arrow pointing
-      // outward at its own target port, no in-line collision.
+      // Single line per port pair, going all the way to the port box.
+      // mid-target-arrow is positioned along the line toward the target
+      // (per Cytoscape's mid-* convention: at the target side of midpoint,
+      // pointing toward target). For mutual adjacencies the .bidirectional
+      // selector below also adds mid-source-arrow on the source side.
       {
         selector: "edge",
         style: {
@@ -239,6 +260,17 @@
           "target-endpoint": "outside-to-line",
           "source-distance-from-node": 1,
           "target-distance-from-node": 1,
+        },
+      },
+      // Mutual adjacency: add a second arrow on the source side of the
+      // line, pointing outward toward source. With both arrows present
+      // they sit offset from each other along the line, each pointing at
+      // its own port.
+      {
+        selector: "edge.bidirectional",
+        style: {
+          "mid-source-arrow-shape": "triangle",
+          "mid-source-arrow-color": "#666",
         },
       },
       {
@@ -260,12 +292,15 @@
           "background-color": "#eaf3fb",
         },
       },
-      // Highlight: thicker blue line + matching blue mid-arrow.
+      // Highlight: thicker blue line + matching blue mid-arrows on both
+      // sides (mid-source-arrow-color covers the bidirectional case so
+      // it doesn't inherit gray from .bidirectional above).
       {
         selector: "edge.highlighted",
         style: {
           "line-color": "#2980b9",
           "mid-target-arrow-color": "#2980b9",
+          "mid-source-arrow-color": "#2980b9",
           width: 3,
         },
       },

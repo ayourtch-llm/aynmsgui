@@ -1,0 +1,51 @@
+<h1>Logical Device: {{name}}</h1>
+<table>
+<tr><th>Name</th><td>{{name}} <form method="POST" action="/devices/{{name}}/rename" style="display:inline">
+<input type="text" name="new_name" size="20" placeholder="New name">
+<button type="submit" onclick="return confirm('Rename device to the new name?')">Rename</button>
+</form></td></tr>
+<tr><th>Hostname</th><td>{{hostname}}</td></tr>
+<tr><th>Role</th><td>{{role}}</td></tr>
+<tr><th>Serial</th><td>{{serial}}{{#has_serial}} <form method="POST" action="/devices/{{name}}/unassign-serial" style="display:inline">
+<button type="submit" onclick="return confirm('Remove serial from this device?')">Unassign Serial</button>
+</form>{{/has_serial}}{{^has_serial}}{{#has_candidates}} <form method="POST" action="/devices/{{name}}/assign-serial" style="display:inline">
+<select name="serial" id="assign-serial-select" onchange="document.getElementById('assign-serial-btn').disabled = (this.value === '')">
+<option value="" selected>-</option>
+{{#candidates}}<option value="{{serial}}">{{serial}} — {{hostname}} — {{last_seen}}</option>{{/candidates}}
+</select>
+<button type="submit" id="assign-serial-btn" disabled onclick="return confirm('Assign this serial to the device?')">Assign Serial</button>
+</form>{{/has_candidates}}{{/has_serial}}</td></tr>
+<tr><th>Software Image</th><td><form method="POST" action="/devices/{{name}}/software-image" style="display:inline">
+<select name="software_image">{{#has_image_extra}}<option value="{{image_extra}}" selected>{{image_extra}}</option>{{/has_image_extra}}{{#image_options}}<option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/image_options}}</select>
+<button type="submit">Update</button>
+</form></td></tr>
+</table>
+{{#has_upgrade_section}}
+<h2>Software Upgrade</h2>
+<form method="POST" action="/devices/{{name}}/upgrade">
+  <button type="submit" onclick="return confirm('Start software upgrade to {{current_image}}?')"
+    style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
+    Upgrade to {{current_image}}
+  </button>
+</form>
+{{/has_upgrade_section}}
+<h2>Port Assignments</h2>
+{{^has_ports}}<p>No port assignments found in this device config.</p>{{/has_ports}}
+{{#has_ports}}
+<form method="POST" action="/devices/{{name}}/ports">
+<table>
+<tr><th>Module</th><th>SKU</th><th>Port</th><th>Service</th></tr>
+{{#port_rows}}
+<tr><td>{{mod_idx}}</td><td>{{sku}}</td><td>{{port_name}}</td><td>
+<select name="{{field_name}}">{{#has_extra}}<option value="{{extra_value}}" selected>{{extra_value}}</option>{{/has_extra}}{{#options}}<option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}</option>{{/options}}</select>
+</td></tr>
+{{/port_rows}}
+</table>
+<button type="submit">Save Port Assignments</button>
+</form>
+{{/has_ports}}
+<h2>Raw Configuration</h2>
+<details><summary>Show JSON</summary>
+<pre>{{config_json}}</pre>
+</details>
+<p><a href="/devices">Back to Devices</a></p>

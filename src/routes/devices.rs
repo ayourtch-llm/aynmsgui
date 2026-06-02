@@ -10,22 +10,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
+use crate::routes::message_response;
 use crate::state::AppState;
 
 // ── View models ───────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-pub struct DeviceListItem {
-    pub name: String,
-    pub hostname: Option<String>,
-    pub role: Option<String>,
+struct DeviceListRow {
+    name: String,
+    hostname: String,
+    role: String,
 }
 
 #[derive(Serialize)]
-pub struct DeviceDetailView {
-    pub name: String,
-    pub config_json: String,
-    pub raw_config: serde_json::Value,
+struct DevicesListCtx {
+    rows: Vec<DeviceListRow>,
 }
 
 /// A candidate asset that could be assigned to a logical device (same SKU, recently called home).
@@ -35,14 +34,84 @@ pub struct AssignCandidate {
     pub last_seen_label: String,
 }
 
+#[derive(Serialize)]
+struct CandidateCtx {
+    serial: String,
+    hostname: String,
+    last_seen: String,
+}
+
+#[derive(Serialize)]
+struct OptionCtx {
+    name: String,
+    selected: bool,
+}
+
+#[derive(Serialize)]
+struct PortRowCtx {
+    mod_idx: usize,
+    sku: String,
+    port_name: String,
+    field_name: String,
+    has_extra: bool,
+    extra_value: String,
+    options: Vec<OptionCtx>,
+}
+
+#[derive(Serialize)]
+struct DeviceDetailCtx {
+    name: String,
+    hostname: String,
+    role: String,
+    serial: String,
+    has_serial: bool,
+    has_candidates: bool,
+    candidates: Vec<CandidateCtx>,
+    has_image_extra: bool,
+    image_extra: String,
+    image_options: Vec<OptionCtx>,
+    has_upgrade_section: bool,
+    current_image: String,
+    has_ports: bool,
+    port_rows: Vec<PortRowCtx>,
+    config_json: String,
+}
+
+// ── Local error helpers ──────────────────────────────────────────────────────
+
+fn not_configured(state: &AppState) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        message_response(state, "Devices", "Logical devices not configured", None),
+    )
+        .into_response()
+}
+
+fn device_not_found(state: &AppState, name: &str) -> Response {
+    let msg = format!("Device '{}' not found", name);
+    (
+        StatusCode::NOT_FOUND,
+        message_response(state, "Not Found", &msg, Some(("/devices", "Back to Devices"))),
+    )
+        .into_response()
+}
+
+fn internal_error(state: &AppState, what: &str, err: impl std::fmt::Display) -> Response {
+    let msg = format!("Failed to {what}: {err}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        message_response(state, "Error", &msg, None),
+    )
+        .into_response()
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn list_devices(State(state): State<AppState>) -> Response {
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
         _ => {
-            let html = "<html><body><p>Logical devices not configured</p></body></html>";
-            return Html(html).into_response();
+            return message_response(&state, "Logical Devices", "Logical devices not configured", None);
         }
     };
 
@@ -53,15 +122,12 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
         Ok(e) => e,
         Err(err) => {
             warn!(path = %devices_dir.display(), error = %err, "Failed to read logical-devices directory");
-            let html = format!(
-                "<html><body><p>Failed to read logical devices directory: {}</p></body></html>",
-                err
-            );
-            return Html(html).into_response();
+            let msg = format!("Failed to read logical devices directory: {err}");
+            return message_response(&state, "Logical Devices", &msg, None);
         }
     };
 
-    let mut items: Vec<DeviceListItem> = Vec::new();
+    let mut rows: Vec<DeviceListRow> = Vec::new();
 
     for entry in entries {
         let entry = match entry {
@@ -75,58 +141,40 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
         let path = entry.path();
 
         // Support flat JSON files: logical-devices/switch-01.json
-        if path.is_file() {
+        let (name_opt, fields) = if path.is_file() {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let name = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
-
-            let (hostname, role) = read_device_fields(&path);
-            items.push(DeviceListItem { name, hostname, role });
-
-        // Support directory-based layout: logical-devices/switch1/config.json
+            let name = path.file_stem().and_then(|s| s.to_str()).map(String::from);
+            (name, read_device_fields(&path))
         } else if path.is_dir() {
-            let name = match path.file_name().and_then(|s| s.to_str()) {
-                Some(n) => n.to_string(),
-                None => continue,
-            };
+            let name = path.file_name().and_then(|s| s.to_str()).map(String::from);
             let config_path = path.join("config.json");
-            let (hostname, role) = read_device_fields(&config_path);
-            items.push(DeviceListItem { name, hostname, role });
+            (name, read_device_fields(&config_path))
+        } else {
+            continue;
+        };
+
+        if let Some(name) = name_opt {
+            rows.push(DeviceListRow {
+                name,
+                hostname: fields.0.unwrap_or_else(|| "-".to_string()),
+                role: fields.1.unwrap_or_else(|| "-".to_string()),
+            });
         }
     }
 
-    items.sort_by(|a, b| a.name.cmp(&b.name));
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let rows: String = items
-        .iter()
-        .map(|item| {
-            format!(
-                "<tr><td><a href=\"/devices/{name}\">{name}</a></td><td>{hostname}</td><td>{role}</td></tr>",
-                name = item.name,
-                hostname = item.hostname.as_deref().unwrap_or("-"),
-                role = item.role.as_deref().unwrap_or("-"),
-            )
-        })
-        .collect();
-
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Logical Devices</title></head>
-<body>
-<h1>Logical Devices</h1>
-<table>
-<tr><th>Name</th><th>Hostname</th><th>Role</th></tr>
-{rows}
-</table>
-</body>
-</html>"#
-    );
-
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.devices_list,
+            "Logical Devices",
+            "",
+            &DevicesListCtx { rows },
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
@@ -136,13 +184,7 @@ pub async fn device_detail(
 ) -> Response {
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     debug!(name = %name, "Looking up logical device detail");
@@ -161,28 +203,14 @@ pub async fn device_detail(
     };
 
     if !exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device '{}' not found</p></body></html>",
-                name
-            )),
-        )
-            .into_response();
+        return device_not_found(&state, &name);
     }
 
     let content = match std::fs::read_to_string(&json_path) {
         Ok(c) => c,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to read device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to read device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "read device config", err);
         }
     };
 
@@ -190,14 +218,7 @@ pub async fn device_detail(
         Ok(v) => v,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "parse device config", err);
         }
     };
 
@@ -214,220 +235,118 @@ pub async fn device_detail(
         vec![]
     };
 
-    let detail = DeviceDetailView {
-        name: name.clone(),
-        config_json: config_json.clone(),
-        raw_config,
-    };
+    let ctx = build_device_detail_ctx(&name, &raw_config, &config_json, &available_services, &available_images, &candidates);
 
-    let html = render_device_detail(&detail, &available_services, &available_images, &candidates);
+    let title = format!("Device {}", name);
+    let html = state
+        .templates
+        .render_page(&state.templates.device_detail, &title, "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
-fn render_device_detail(d: &DeviceDetailView, available_services: &[String], available_images: &[String], candidates: &[AssignCandidate]) -> String {
-    let hostname = d
-        .raw_config
+/// Build the context for the device_detail template from the raw JSON config.
+fn build_device_detail_ctx(
+    name: &str,
+    raw_config: &serde_json::Value,
+    config_json: &str,
+    available_services: &[String],
+    available_images: &[String],
+    candidates: &[AssignCandidate],
+) -> DeviceDetailCtx {
+    let hostname = raw_config
         .get("hostname")
-        .or_else(|| d.raw_config.get("vars").and_then(|v| v.get("hostname")))
+        .or_else(|| raw_config.get("vars").and_then(|v| v.get("hostname")))
         .and_then(|v| v.as_str())
-        .unwrap_or("-");
+        .unwrap_or("-")
+        .to_string();
 
-    let role = d
-        .raw_config
+    let role = raw_config
         .get("role")
         .and_then(|v| v.as_str())
-        .unwrap_or("-");
+        .unwrap_or("-")
+        .to_string();
 
-    let current_image = d
-        .raw_config
+    let current_image = raw_config
         .get("software-image")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
-    let image_options: String = available_images
+    let image_options: Vec<OptionCtx> = available_images
         .iter()
-        .map(|img| {
-            let selected = if img == current_image { " selected" } else { "" };
-            format!(
-                "<option value=\"{img}\"{selected}>{img}</option>",
-                img = html_escape(img),
-                selected = selected,
-            )
+        .map(|img| OptionCtx {
+            name: img.clone(),
+            selected: img == &current_image,
+        })
+        .collect();
+    let has_image_extra =
+        !current_image.is_empty() && !available_images.iter().any(|i| i == &current_image);
+
+    let serial = first_module_serial(raw_config);
+    let has_serial = serial.is_some();
+    let serial_display = serial.clone().unwrap_or_else(|| "-".to_string());
+    let candidates_ctx: Vec<CandidateCtx> = candidates
+        .iter()
+        .map(|c| CandidateCtx {
+            serial: c.serial.clone(),
+            hostname: c.hostname.clone(),
+            last_seen: c.last_seen_label.clone(),
         })
         .collect();
 
-    // If current image isn't in the list, add it as selected
-    let image_extra = if !current_image.is_empty()
-        && !available_images.iter().any(|i| i == current_image)
-    {
-        format!(
-            "<option value=\"{img}\" selected>{img}</option>",
-            img = html_escape(current_image),
-        )
-    } else {
-        String::new()
-    };
-
-    let software_image_field = format!(
-        r#"<form method="POST" action="/devices/{name}/software-image" style="display:inline">
-<select name="software_image">{image_extra}{image_options}</select>
-<button type="submit">Update</button>
-</form>"#,
-        name = d.name,
-        image_extra = image_extra,
-        image_options = image_options,
-    );
-
-    let serial = first_module_serial(&d.raw_config);
-    let serial_display = match &serial {
-        Some(s) => s.as_str(),
-        None => "-",
-    };
-
-    let serial_action = if serial.is_some() {
-        format!(
-            r#" <form method="POST" action="/devices/{name}/unassign-serial" style="display:inline">
-<button type="submit" onclick="return confirm('Remove serial from this device?')">Unassign Serial</button>
-</form>"#,
-            name = d.name,
-        )
-    } else if !candidates.is_empty() {
-        let options: String = candidates
-            .iter()
-            .map(|c| {
-                format!(
-                    "<option value=\"{serial}\">{serial} — {hostname} — {last_seen}</option>",
-                    serial = html_escape(&c.serial),
-                    hostname = html_escape(&c.hostname),
-                    last_seen = html_escape(&c.last_seen_label),
-                )
-            })
-            .collect();
-        format!(
-            r#" <form method="POST" action="/devices/{name}/assign-serial" style="display:inline">
-<select name="serial" id="assign-serial-select" onchange="document.getElementById('assign-serial-btn').disabled = (this.value === '')">
-<option value="" selected>-</option>
-{options}
-</select>
-<button type="submit" id="assign-serial-btn" disabled onclick="return confirm('Assign this serial to the device?')">Assign Serial</button>
-</form>"#,
-            name = d.name,
-            options = options,
-        )
-    } else {
-        String::new()
-    };
-
-    // Build port assignment table with editable service dropdowns
-    let mut port_rows = String::new();
-    if let Some(modules) = d.raw_config.get("modules").and_then(|m| m.as_array()) {
+    // Build port assignment rows
+    let mut port_rows: Vec<PortRowCtx> = Vec::new();
+    if let Some(modules) = raw_config.get("modules").and_then(|m| m.as_array()) {
         for (mod_idx, module_val) in modules.iter().enumerate() {
             if module_val.is_null() {
                 continue;
             }
-            let sku = module_val.get("SKU").and_then(|v| v.as_str()).unwrap_or("-");
+            let sku = module_val.get("SKU").and_then(|v| v.as_str()).unwrap_or("-").to_string();
             if let Some(ports) = module_val.get("ports").and_then(|p| p.as_array()) {
                 for port in ports {
-                    let port_name = port.get("name").and_then(|v| v.as_str()).unwrap_or("-");
-                    let current_service = port.get("service").and_then(|v| v.as_str()).unwrap_or("");
-
-                    let options: String = available_services.iter().map(|svc| {
-                        let selected = if svc == current_service { " selected" } else { "" };
-                        format!("<option value=\"{svc}\"{selected}>{svc}</option>",
-                            svc = html_escape(svc), selected = selected)
-                    }).collect();
-
-                    // If current service isn't in the list, add it as selected
-                    let extra = if !current_service.is_empty() && !available_services.iter().any(|s| s == current_service) {
-                        format!("<option value=\"{svc}\" selected>{svc}</option>",
-                            svc = html_escape(current_service))
-                    } else {
-                        String::new()
-                    };
-
-                    port_rows.push_str(&format!(
-                        "<tr><td>{mod_idx}</td><td>{sku}</td><td>{port_name}</td><td>\
-                         <select name=\"port_{mod_idx}_{port_name}\">{extra}{options}</select></td></tr>\n",
-                        mod_idx = mod_idx,
-                        sku = html_escape(sku),
-                        port_name = html_escape(port_name),
-                        extra = extra,
-                        options = options,
-                    ));
+                    let port_name = port.get("name").and_then(|v| v.as_str()).unwrap_or("-").to_string();
+                    let current_service = port.get("service").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let options: Vec<OptionCtx> = available_services
+                        .iter()
+                        .map(|svc| OptionCtx {
+                            name: svc.clone(),
+                            selected: svc == &current_service,
+                        })
+                        .collect();
+                    let has_extra = !current_service.is_empty()
+                        && !available_services.iter().any(|s| s == &current_service);
+                    port_rows.push(PortRowCtx {
+                        field_name: format!("port_{mod_idx}_{port_name}"),
+                        mod_idx,
+                        sku: sku.clone(),
+                        port_name,
+                        has_extra,
+                        extra_value: current_service,
+                        options,
+                    });
                 }
             }
         }
     }
 
-    let ports_section = if port_rows.is_empty() {
-        "<p>No port assignments found in this device config.</p>".to_string()
-    } else {
-        format!(
-            r#"<form method="POST" action="/devices/{name}/ports">
-<table>
-<tr><th>Module</th><th>SKU</th><th>Port</th><th>Service</th></tr>
-{port_rows}
-</table>
-<button type="submit">Save Port Assignments</button>
-</form>"#,
-            name = d.name,
-            port_rows = port_rows,
-        )
-    };
-
-    // Show upgrade section only when serial is assigned and a software image is set
-    let upgrade_section = if serial.is_some() && !current_image.is_empty() {
-        format!(
-            r#"<h2>Software Upgrade</h2>
-<form method="POST" action="/devices/{name}/upgrade">
-  <button type="submit" onclick="return confirm('Start software upgrade to {image}?')"
-    style="background:#d9534f; color:white; padding:0.5rem 1rem; border:none; cursor:pointer;">
-    Upgrade to {image}
-  </button>
-</form>"#,
-            name = d.name,
-            image = html_escape(current_image),
-        )
-    } else {
-        String::new()
-    };
-
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Device {name}</title></head>
-<body>
-<h1>Logical Device: {name}</h1>
-<table>
-<tr><th>Name</th><td>{name} <form method="POST" action="/devices/{name}/rename" style="display:inline">
-<input type="text" name="new_name" size="20" placeholder="New name">
-<button type="submit" onclick="return confirm('Rename device to the new name?')">Rename</button>
-</form></td></tr>
-<tr><th>Hostname</th><td>{hostname}</td></tr>
-<tr><th>Role</th><td>{role}</td></tr>
-<tr><th>Serial</th><td>{serial}{serial_action}</td></tr>
-<tr><th>Software Image</th><td>{software_image_field}</td></tr>
-</table>
-{upgrade_section}
-<h2>Port Assignments</h2>
-{ports_section}
-<h2>Raw Configuration</h2>
-<details><summary>Show JSON</summary>
-<pre>{config_json}</pre>
-</details>
-<p><a href="/devices">Back to Devices</a></p>
-</body>
-</html>"#,
-        name = d.name,
-        hostname = hostname,
-        role = role,
-        serial = html_escape(serial_display),
-        serial_action = serial_action,
-        software_image_field = software_image_field,
-        upgrade_section = upgrade_section,
-        ports_section = ports_section,
-        config_json = html_escape(&d.config_json),
-    )
+    DeviceDetailCtx {
+        name: name.to_string(),
+        hostname,
+        role,
+        serial: serial_display,
+        has_serial,
+        has_candidates: !candidates_ctx.is_empty(),
+        candidates: candidates_ctx,
+        has_image_extra,
+        image_extra: current_image.clone(),
+        image_options,
+        has_upgrade_section: has_serial && !current_image.is_empty(),
+        current_image,
+        has_ports: !port_rows.is_empty(),
+        port_rows,
+        config_json: config_json.to_string(),
+    }
 }
 
 /// Compile a logical device config into a .cfg file in target-configs.
@@ -767,13 +686,7 @@ pub async fn update_ports(
 ) -> Response {
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     debug!(name = %name, "Updating ports for logical device");
@@ -792,28 +705,14 @@ pub async fn update_ports(
     };
 
     if !exists {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device '{}' not found</p></body></html>",
-                name
-            )),
-        )
-            .into_response();
+        return device_not_found(&state, &name);
     }
 
     let content = match std::fs::read_to_string(&json_path) {
         Ok(c) => c,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to read device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to read device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "read device config", err);
         }
     };
 
@@ -821,14 +720,7 @@ pub async fn update_ports(
         Ok(v) => v,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "parse device config", err);
         }
     };
 
@@ -860,27 +752,13 @@ pub async fn update_ports(
         Ok(s) => s,
         Err(err) => {
             warn!(error = %err, "Failed to serialise updated device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "serialise device config", err);
         }
     };
 
     if let Err(err) = std::fs::write(&json_path, &updated) {
         warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(
-                "<html><body><p>Failed to write device config: {}</p></body></html>",
-                err
-            )),
-        )
-            .into_response();
+        return internal_error(&state, "write device config", err);
     }
 
     info!(name = %name, "Port assignments saved, compiling config");
@@ -907,13 +785,7 @@ pub async fn unassign_serial(
 ) -> Response {
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     // Locate the device config file
@@ -924,28 +796,14 @@ pub async fn unassign_serial(
     } else if dir_path.exists() {
         dir_path
     } else {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device '{}' not found</p></body></html>",
-                name
-            )),
-        )
-            .into_response();
+        return device_not_found(&state, &name);
     };
 
     let content = match std::fs::read_to_string(&json_path) {
         Ok(c) => c,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to read device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to read device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "read device config", err);
         }
     };
 
@@ -953,14 +811,7 @@ pub async fn unassign_serial(
         Ok(v) => v,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "parse device config", err);
         }
     };
 
@@ -978,27 +829,13 @@ pub async fn unassign_serial(
         Ok(s) => s,
         Err(err) => {
             warn!(error = %err, "Failed to serialise updated device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "serialise device config", err);
         }
     };
 
     if let Err(err) = std::fs::write(&json_path, &updated) {
         warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(
-                "<html><body><p>Failed to write device config: {}</p></body></html>",
-                err
-            )),
-        )
-            .into_response();
+        return internal_error(&state, "write device config", err);
     }
 
     info!(name = %name, "Serial unassigned from device, recompiling config");
@@ -1031,20 +868,14 @@ pub async fn assign_serial(
     if form.serial.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Html("<html><body><p>No serial selected</p></body></html>"),
+            message_response(&state, "Assign Serial", "No serial selected", None),
         )
             .into_response();
     }
 
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     let flat_path = base_dir.join("logical-devices").join(format!("{}.json", name));
@@ -1054,28 +885,14 @@ pub async fn assign_serial(
     } else if dir_path.exists() {
         dir_path
     } else {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device '{}' not found</p></body></html>",
-                name
-            )),
-        )
-            .into_response();
+        return device_not_found(&state, &name);
     };
 
     let content = match std::fs::read_to_string(&json_path) {
         Ok(c) => c,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to read device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to read device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "read device config", err);
         }
     };
 
@@ -1083,14 +900,7 @@ pub async fn assign_serial(
         Ok(v) => v,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "parse device config", err);
         }
     };
 
@@ -1106,27 +916,13 @@ pub async fn assign_serial(
         Ok(s) => s,
         Err(err) => {
             warn!(error = %err, "Failed to serialise updated device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "serialise device config", err);
         }
     };
 
     if let Err(err) = std::fs::write(&json_path, &updated) {
         warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(
-                "<html><body><p>Failed to write device config: {}</p></body></html>",
-                err
-            )),
-        )
-            .into_response();
+        return internal_error(&state, "write device config", err);
     }
 
     info!(name = %name, serial = %form.serial, "Serial assigned to device, recompiling config");
@@ -1157,13 +953,7 @@ pub async fn update_software_image(
 ) -> Response {
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     let flat_path = base_dir.join("logical-devices").join(format!("{}.json", name));
@@ -1173,28 +963,14 @@ pub async fn update_software_image(
     } else if dir_path.exists() {
         dir_path
     } else {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device '{}' not found</p></body></html>",
-                name
-            )),
-        )
-            .into_response();
+        return device_not_found(&state, &name);
     };
 
     let content = match std::fs::read_to_string(&json_path) {
         Ok(c) => c,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to read device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to read device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "read device config", err);
         }
     };
 
@@ -1202,14 +978,7 @@ pub async fn update_software_image(
         Ok(v) => v,
         Err(err) => {
             warn!(path = %json_path.display(), error = %err, "Failed to parse device config JSON");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to parse device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "parse device config", err);
         }
     };
 
@@ -1219,27 +988,13 @@ pub async fn update_software_image(
         Ok(s) => s,
         Err(err) => {
             warn!(error = %err, "Failed to serialise updated device config");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to serialise device config: {}</p></body></html>",
-                    err
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "serialise device config", err);
         }
     };
 
     if let Err(err) = std::fs::write(&json_path, &updated) {
         warn!(path = %json_path.display(), error = %err, "Failed to write updated device config");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Html(format!(
-                "<html><body><p>Failed to write device config: {}</p></body></html>",
-                err
-            )),
-        )
-            .into_response();
+        return internal_error(&state, "write device config", err);
     }
 
     info!(name = %name, image = %form.software_image, "Software image updated, recompiling config");
@@ -1282,29 +1037,14 @@ pub async fn start_upgrade(
 ) -> Response {
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     // Load device config to get serial and software-image
     let configs = load_all_device_configs(base_dir);
     let config = match configs.get(&name) {
         Some(c) => c.clone(),
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Html(format!(
-                    "<html><body><p>Device '{}' not found</p></body></html>",
-                    name
-                )),
-            )
-                .into_response();
-        }
+        None => return device_not_found(&state, &name),
     };
 
     let serial = match first_module_serial(&config) {
@@ -1312,7 +1052,7 @@ pub async fn start_upgrade(
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Html("<html><body><p>No serial assigned to this device</p></body></html>"),
+                message_response(&state, "Upgrade", "No serial assigned to this device", None),
             )
                 .into_response();
         }
@@ -1323,7 +1063,7 @@ pub async fn start_upgrade(
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Html("<html><body><p>No software image configured for this device</p></body></html>"),
+                message_response(&state, "Upgrade", "No software image configured for this device", None),
             )
                 .into_response();
         }
@@ -1332,12 +1072,10 @@ pub async fn start_upgrade(
     // Resolve the image file path
     let image_path = base_dir.join("software-images").join(&image_name);
     if !image_path.exists() {
+        let msg = format!("Software image file not found: {}", image_name);
         return (
             StatusCode::BAD_REQUEST,
-            Html(format!(
-                "<html><body><p>Software image file not found: {}</p></body></html>",
-                html_escape(&image_name),
-            )),
+            message_response(&state, "Upgrade", &msg, None),
         )
             .into_response();
     }
@@ -1353,17 +1091,9 @@ pub async fn start_upgrade(
     let ip = match device_ip {
         Some(ip) => ip,
         None => {
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>No IP Address</h1>
-<p>Device <strong>{serial}</strong> has no known IP address.</p>
-<p><a href="/devices/{name}">Back</a></p>
-</body></html>"#,
-                serial = html_escape(&serial),
-                name = html_escape(&name),
-            ))
-            .into_response();
+            let msg = format!("Device {} has no known IP address.", serial);
+            let back = format!("/devices/{name}");
+            return message_response(&state, "No IP Address", &msg, Some((&back, "Back")));
         }
     };
 
@@ -1468,20 +1198,14 @@ pub async fn rename_device(
     if new_name.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Html("<html><body><p>New name cannot be empty</p></body></html>"),
+            message_response(&state, "Rename", "New name cannot be empty", None),
         )
             .into_response();
     }
 
     let base_dir = match &state.config.cfggen_base_dir {
         Some(d) if d.join("logical-devices").exists() => d,
-        _ => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Html("<html><body><p>Logical devices not configured</p></body></html>"),
-            )
-                .into_response();
-        }
+        _ => return not_configured(&state),
     };
 
     let ld_dir = base_dir.join("logical-devices");
@@ -1493,12 +1217,10 @@ pub async fn rename_device(
     let dst_json = ld_dir.join(format!("{}.json", new_name));
 
     if dst_dir.exists() || dst_json.exists() {
+        let msg = format!("A device named '{}' already exists", new_name);
         return (
             StatusCode::CONFLICT,
-            Html(format!(
-                "<html><body><p>A device named '{}' already exists</p></body></html>",
-                new_name
-            )),
+            message_response(&state, "Conflict", &msg, Some(("/devices", "Back"))),
         )
             .into_response();
     }
@@ -1506,36 +1228,15 @@ pub async fn rename_device(
     if src_dir.exists() {
         if let Err(e) = std::fs::rename(&src_dir, &dst_dir) {
             warn!(error = %e, from = %name, to = %new_name, "Failed to rename device directory");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to rename: {}</p></body></html>",
-                    e
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "rename", e);
         }
     } else if src_json.exists() {
         if let Err(e) = std::fs::rename(&src_json, &dst_json) {
             warn!(error = %e, from = %name, to = %new_name, "Failed to rename device JSON");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Html(format!(
-                    "<html><body><p>Failed to rename: {}</p></body></html>",
-                    e
-                )),
-            )
-                .into_response();
+            return internal_error(&state, "rename", e);
         }
     } else {
-        return (
-            StatusCode::NOT_FOUND,
-            Html(format!(
-                "<html><body><p>Device '{}' not found</p></body></html>",
-                name
-            )),
-        )
-            .into_response();
+        return device_not_found(&state, &name);
     }
 
     info!(from = %name, to = %new_name, "Renamed logical device");

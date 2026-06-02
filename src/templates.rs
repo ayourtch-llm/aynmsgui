@@ -33,6 +33,8 @@ pub struct Templates {
     pub apply_result: mustache::Template,
     pub assets_list: mustache::Template,
     pub asset_detail: mustache::Template,
+    pub devices_list: mustache::Template,
+    pub device_detail: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -62,6 +64,8 @@ impl Templates {
             apply_result: compile(&dir.join("apply_result.html.mustache"))?,
             assets_list: compile(&dir.join("assets_list.html.mustache"))?,
             asset_detail: compile(&dir.join("asset_detail.html.mustache"))?,
+            devices_list: compile(&dir.join("devices_list.html.mustache"))?,
+            device_detail: compile(&dir.join("device_detail.html.mustache"))?,
             message: compile(&dir.join("message.html.mustache"))?,
         })
     }

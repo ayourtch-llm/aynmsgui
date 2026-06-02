@@ -1416,6 +1416,14 @@
     });
     // ctrl+right-click on a device cycles a BFS-radius selection.
     cy.on("cxttap", "node", handleCtrlRightClick);
+    // Double-click on a device (or one of its ports) flies in to that
+    // device, same animation as picking it from the search dropdown.
+    cy.on("dbltap", "node", function (evt) {
+      var n = evt.target;
+      var deviceId = n.hasClass("device") ? n.id() :
+                     (n.isChild() ? n.parent().first().id() : null);
+      if (deviceId) flyToDevice(deviceId);
+    });
     // Persist positions after the user moves any node.
     cy.on("dragfree", "node", saveCurrentPositions);
 

@@ -379,6 +379,77 @@ details summary { cursor: pointer; font-weight: 600; color: #1a5276; }
     border: 1px solid #ddd;
     border-radius: 4px;
 }
+.topology-page .topology-search-wrap {
+    position: relative;
+    display: inline-block;
+    margin-left: 8px;
+}
+.topology-page .topology-search-wrap input {
+    width: 220px;
+    padding-right: 22px;
+}
+.topology-page #topology-search-clear {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    color: #888;
+    border: none;
+    padding: 0 4px;
+    font-size: 1.1em;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 3px;
+}
+.topology-page #topology-search-clear:hover {
+    background: #eee;
+    color: #333;
+}
+.topology-page #topology-search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin: 2px 0 0 0;
+    padding: 0;
+    list-style: none;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+    max-height: 280px;
+    overflow-y: auto;
+    z-index: 50;
+    min-width: 280px;
+}
+.topology-page #topology-search-results li {
+    padding: 6px 10px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 0.95em;
+}
+.topology-page #topology-search-results li:last-child { border-bottom: none; }
+.topology-page #topology-search-results li:hover,
+.topology-page #topology-search-results li.active {
+    background: #e3edf7;
+}
+.topology-page #topology-search-results .sr-name {
+    font-weight: 600;
+    color: #1a5276;
+}
+.topology-page #topology-search-results .sr-meta {
+    color: #666;
+    font-size: 0.88em;
+    margin-top: 1px;
+}
+.topology-page #topology-search-results .sr-empty {
+    color: #888;
+    font-style: italic;
+    cursor: default;
+}
+.topology-page #topology-search-results .sr-empty:hover { background: transparent; }
+
 .topology-page #topology-detail {
     flex: 0 0 280px;
     overflow-y: auto;

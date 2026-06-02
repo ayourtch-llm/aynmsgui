@@ -1184,18 +1184,23 @@
     var raw = inputEl.value;
     var q = raw.trim();
     cy.elements().removeClass("dim");
+    renderSearchResults(q, []);
     if (q === "") return;
     var caseSensitive = q.toLowerCase() !== q;
     var needle = caseSensitive ? q : q.toLowerCase();
 
     var matched = new Set();
+    var matches = [];
     cy.nodes(".device").forEach(function (d) {
       var data = d.data();
       var hay = [data.id, data.label, data.description, data.role, data.ip, data.platform]
         .filter(function (s) { return s; })
         .join("  ");
       if (!caseSensitive) hay = hay.toLowerCase();
-      if (hay.indexOf(needle) !== -1) matched.add(data.id);
+      if (hay.indexOf(needle) !== -1) {
+        matched.add(data.id);
+        matches.push(data);
+      }
     });
 
     cy.nodes(".device").forEach(function (d) {
@@ -1208,6 +1213,84 @@
       var tParent = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
       if (!matched.has(sParent) && !matched.has(tParent)) e.addClass("dim");
     });
+
+    matches.sort(function (a, b) {
+      return (a.label || a.id).localeCompare(b.label || b.id);
+    });
+    renderSearchResults(q, matches);
+  }
+
+  function renderSearchResults(query, matches) {
+    var list = document.getElementById("topology-search-results");
+    if (!list) return;
+    if (query === "") {
+      list.innerHTML = "";
+      list.hidden = true;
+      return;
+    }
+    var html = [];
+    if (matches.length === 0) {
+      html.push('<li class="sr-empty">No matches</li>');
+    } else {
+      matches.slice(0, 50).forEach(function (d) {
+        var name = d.label || d.id;
+        var metaBits = [];
+        if (d.description) metaBits.push(d.description);
+        if (d.ip) metaBits.push(d.ip);
+        var meta = metaBits.join(" · ");
+        html.push(
+          '<li role="option" data-id="' + escapeHtml(d.id) + '">' +
+          '<div class="sr-name">' + escapeHtml(name) + '</div>' +
+          (meta ? '<div class="sr-meta">' + escapeHtml(meta) + '</div>' : '') +
+          '</li>'
+        );
+      });
+      if (matches.length > 50) {
+        html.push('<li class="sr-empty">… and ' + (matches.length - 50) + ' more</li>');
+      }
+    }
+    list.innerHTML = html.join("");
+    list.hidden = false;
+    list.querySelectorAll("li[data-id]").forEach(function (li) {
+      li.addEventListener("click", function () { flyToDevice(li.getAttribute("data-id")); });
+    });
+  }
+
+  // Animated "fly-out then fly-in" zoom: pull the camera back, then zoom
+  // into the chosen device. Also selects it and shows its detail panel.
+  function flyToDevice(id) {
+    if (!cy) return;
+    var node = cy.getElementById(id);
+    if (!node || !node.length) return;
+    var targetPos = node.position();
+    var currentZoom = cy.zoom();
+    var outZoom = Math.max(0.15, currentZoom * 0.5);
+    var inZoom = Math.max(1.0, currentZoom);
+    cy.animate(
+      { zoom: outZoom, center: { eles: node } },
+      {
+        duration: 250,
+        easing: "ease-out",
+        complete: function () {
+          cy.animate(
+            { zoom: inZoom,
+              pan: { x: cy.width() / 2 - targetPos.x * inZoom,
+                     y: cy.height() / 2 - targetPos.y * inZoom } },
+            { duration: 350, easing: "ease-in-out" }
+          );
+        },
+      }
+    );
+    cy.elements(":selected").unselect();
+    node.select();
+    renderDetail(node);
+  }
+
+  function clearSearch() {
+    var inputEl = document.getElementById("topology-search");
+    if (inputEl) inputEl.value = "";
+    applySearch();
+    if (inputEl) inputEl.focus();
   }
 
   // Highlight the relevant siblings of `el`:
@@ -1541,6 +1624,21 @@
       else stopAutoRefresh();
     });
     document.getElementById("topology-search").addEventListener("input", applySearch);
+    document.getElementById("topology-search-clear").addEventListener("click", clearSearch);
+    // Hide the results dropdown when clicking anywhere outside the search.
+    document.addEventListener("click", function (ev) {
+      var wrap = ev.target.closest(".topology-search-wrap");
+      if (!wrap) {
+        var list = document.getElementById("topology-search-results");
+        if (list) list.hidden = true;
+      }
+    });
+    // Re-show the dropdown when the input regains focus (if there's a query).
+    document.getElementById("topology-search").addEventListener("focus", function () {
+      var inputEl = document.getElementById("topology-search");
+      var list = document.getElementById("topology-search-results");
+      if (inputEl && list && inputEl.value.trim() && list.innerHTML) list.hidden = false;
+    });
 
     // Render whatever the shadow contains first, with everything stale;
     // the first /topology/json fetch will then un-stale the items it sees.

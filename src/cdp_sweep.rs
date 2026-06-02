@@ -46,10 +46,28 @@ pub struct CdpSnapshot {
     pub fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Strip the FQDN suffix, leaving just the first label (e.g.
-/// "AD6-X014-S1249.a3s.alpehuzes.nl" -> "AD6-X014-S1249").
+/// Canonicalize a hostname:
+///   - If the name's last segment looks like a TLD (2–6 lowercase ASCII
+///     letters), treat it as an FQDN and strip to the first segment.
+///     e.g. "AD6-X014-S1249.a3s.alpehuzes.nl" -> "AD6-X014-S1249"
+///   - Otherwise keep the whole name intact, so MAC-style identifiers
+///     like "AP38B8.1234.2345" (where dots are part of the name, not a
+///     domain suffix) don't collapse into "AP38B8".
 pub fn canonical_hostname(host: &str) -> &str {
-    host.split('.').next().unwrap_or(host).trim()
+    let host = host.trim();
+    if host.is_empty() {
+        return host;
+    }
+    if let Some(idx) = host.rfind('.') {
+        let last = &host[idx + 1..];
+        let looks_like_tld = !last.is_empty()
+            && last.len() <= 6
+            && last.chars().all(|c| c.is_ascii_lowercase());
+        if looks_like_tld {
+            return host.split('.').next().unwrap_or(host);
+        }
+    }
+    host
 }
 
 /// Fetch the sweep and merge results into `state.seen_assets`.
@@ -212,6 +230,20 @@ mod tests {
         assert_eq!(canonical_hostname("AD6-X014-S1249.a3s.alpehuzes.nl"), "AD6-X014-S1249");
         assert_eq!(canonical_hostname("router1"), "router1");
         assert_eq!(canonical_hostname(""), "");
+        // FQDN with 3-letter TLD
+        assert_eq!(canonical_hostname("box.example.com"), "box");
+        // 2-letter TLD
+        assert_eq!(canonical_hostname("host.uk"), "host");
+    }
+
+    #[test]
+    fn test_canonical_hostname_preserves_mac_style_names() {
+        // AP / phone / camera hostnames where dots are part of the
+        // identifier, not a domain suffix — last segment is digits, not a TLD.
+        assert_eq!(canonical_hostname("AP38B8.1234.2345"), "AP38B8.1234.2345");
+        assert_eq!(canonical_hostname("SEP000.AAAA.BBBB"), "SEP000.AAAA.BBBB");
+        // Mixed-case last segment also shouldn't be treated as TLD.
+        assert_eq!(canonical_hostname("AP38B8.1234.AAAA"), "AP38B8.1234.AAAA");
     }
 
     #[test]

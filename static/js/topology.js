@@ -524,6 +524,22 @@
     return best;
   }
 
+  // Return the port-child on `parentId` that connects to `childId`, or null.
+  // Used for port-position-aware ordering during placement.
+  function portOnDeviceFor(parentId, childId) {
+    var parentNode = cy.getElementById(parentId);
+    if (!parentNode.length) return null;
+    var edges = parentNode.children().connectedEdges();
+    for (var i = 0; i < edges.length; i++) {
+      var e = edges[i];
+      var sParent = e.source().isChild() ? e.source().parent().first().id() : e.source().id();
+      var tParent = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
+      if (sParent === parentId && tParent === childId) return e.source();
+      if (tParent === parentId && sParent === childId) return e.target();
+    }
+    return null;
+  }
+
   function rankedLayout() {
     var devices = cy.nodes(".device").toArray();
     if (!devices.length) return;
@@ -531,49 +547,109 @@
     var ranks = r.ranks;
     var neighbors = r.neighbors;
 
+    // 1) Process devices in rank-descending order; for each, the parent in
+    //    the placement tree is its highest-ranked already-processed neighbor.
     var sorted = devices.slice().sort(function (a, b) {
       return (ranks[b.id()] || 0) - (ranks[a.id()] || 0);
     });
-
-    var placed = {};
-    var anglesByParent = {};
-    var spacing = 350;
-
+    var parentOf = {};
+    var childrenOf = {};
+    var processed = new Set();
+    var disconnectedRoots = [];
     sorted.forEach(function (d, idx) {
       var id = d.id();
-      if (idx === 0) {
-        placed[id] = { x: 0, y: 0 };
-        anglesByParent[id] = [];
+      if (idx === 0) { processed.add(id); return; }
+      var processedN = [];
+      neighbors[id].forEach(function (n) { if (processed.has(n)) processedN.push(n); });
+      if (processedN.length === 0) {
+        // Separate component — this node becomes a new sub-root.
+        disconnectedRoots.push(id);
+        processed.add(id);
         return;
       }
+      processedN.sort(function (a, b) { return (ranks[b] || 0) - (ranks[a] || 0); });
+      var p = processedN[0];
+      parentOf[id] = p;
+      if (!childrenOf[p]) childrenOf[p] = [];
+      childrenOf[p].push(id);
+      processed.add(id);
+    });
 
-      // Highest-ranked placed neighbor becomes the parent.
-      var placedN = [];
-      neighbors[id].forEach(function (n) { if (placed[n]) placedN.push(n); });
+    // 2) Compute subtree size (descendant count + 1) for each device.
+    var subtreeSize = {};
+    function sizeOf(id) {
+      if (subtreeSize[id] != null) return subtreeSize[id];
+      var s = 1;
+      (childrenOf[id] || []).forEach(function (c) { s += sizeOf(c); });
+      subtreeSize[id] = s;
+      return s;
+    }
+    sorted.forEach(function (d) { sizeOf(d.id()); });
 
-      if (placedN.length === 0) {
-        // Disconnected — place far out at a random angle from origin.
-        var angle0 = Math.random() * 2 * Math.PI;
-        placed[id] = {
-          x: Math.cos(angle0) * spacing * 4,
-          y: Math.sin(angle0) * spacing * 4,
-        };
-        anglesByParent[id] = [];
-        return;
-      }
-      placedN.sort(function (a, b) { return (ranks[b] || 0) - (ranks[a] || 0); });
-      var parent = placedN[0];
-      var parentPos = placed[parent];
+    // 3) Radial tree placement. Each subtree gets an angular sector
+    //    proportional to its size so hubs with many descendants spread
+    //    wider. Children are ordered by the position of the port on the
+    //    parent that connects to them — port at top of parent's column
+    //    → child placed at the most "upward" angle in the sector. This
+    //    keeps the visual edges from crossing inside their hub's wedge.
 
-      var taken = anglesByParent[parent] || [];
-      var angle = pickFreeAngle(taken, 24);
-      anglesByParent[parent] = taken.concat([angle]);
-      anglesByParent[id] = [];
+    var placed = {};
+    var BASE_RADIUS = 280;     // ring 0 → ring 1 distance
+    var RING_STEP   = 200;     // additional distance per ring
 
-      placed[id] = {
-        x: parentPos.x + Math.cos(angle) * spacing,
-        y: parentPos.y + Math.sin(angle) * spacing,
-      };
+    function place(id, x, y, parentAngle, sectorWidth, depth) {
+      placed[id] = { x: x, y: y };
+      var kids = (childrenOf[id] || []).slice();
+      if (!kids.length) return;
+
+      // Sort kids by the y-position of their port on this device (parent).
+      // Falls back to subtree size order for ones without a known port.
+      kids.sort(function (a, b) {
+        var pa = portOnDeviceFor(id, a);
+        var pb = portOnDeviceFor(id, b);
+        if (pa && pb) return pa.position().y - pb.position().y;
+        if (pa) return -1;
+        if (pb) return 1;
+        return 0;
+      });
+
+      // Sector center: opposite the parent (for non-root). Root uses full 2π.
+      var sectorCenter = depth === 0 ? -Math.PI / 2 : (parentAngle + Math.PI);
+      var maxWidth = depth === 0 ? 2 * Math.PI : Math.min(sectorWidth, (5 / 6) * Math.PI);
+      var sectorStart = sectorCenter - maxWidth / 2;
+
+      var totalKids = 0;
+      kids.forEach(function (c) { totalKids += subtreeSize[c]; });
+
+      var anglePos = sectorStart;
+      var radius = BASE_RADIUS + depth * RING_STEP;
+      kids.forEach(function (c) {
+        var slice = maxWidth * (subtreeSize[c] / totalKids);
+        var childAngle = anglePos + slice / 2;
+        var cx = x + Math.cos(childAngle) * radius;
+        var cy = y + Math.sin(childAngle) * radius;
+        // The angle from the child back to its parent is childAngle + π.
+        place(c, cx, cy, childAngle + Math.PI, slice, depth + 1);
+        anglePos += slice;
+      });
+    }
+
+    var root = sorted[0].id();
+    place(root, 0, 0, 0, 2 * Math.PI, 0);
+
+    // Disconnected components: place each off to the side, far from root.
+    var offset = 2500;
+    disconnectedRoots.forEach(function (id, i) {
+      var ang = (i / Math.max(1, disconnectedRoots.length)) * 2 * Math.PI;
+      place(id, Math.cos(ang) * offset, Math.sin(ang) * offset, 0, 2 * Math.PI, 0);
+    });
+
+    // Any device that somehow wasn't reached (shouldn't happen, but
+    // defensive): scatter at distance.
+    devices.forEach(function (d, i) {
+      if (placed[d.id()]) return;
+      var ang = i * 0.7;
+      placed[d.id()] = { x: Math.cos(ang) * offset * 2, y: Math.sin(ang) * offset * 2 };
     });
 
     cy.startBatch();

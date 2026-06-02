@@ -242,20 +242,20 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
-      // Single line per port pair, with Cytoscape's built-in triangle
-      // markers in the middle of the line. For unidirectional, one
-      // mid-target-arrow. For bidirectional, also mid-source-arrow —
-      // the two render facing each other (>< look) at the midpoint.
-      // The text-label approach gave nicer outward-pointing geometry but
-      // the glyphs were inconsistent with Cytoscape's other arrowheads;
-      // mid-arrows are uglier but visually uniform with everything else.
+      // Single line per port pair with open "vee" arrows in the middle.
+      // Unidirectional: one mid-target-arrow toward target. Bidirectional:
+      // also mid-source-arrow on the source side. Vees give the same
+      // directional read as triangles but visually lighter — works for
+      // single arrows AND for the `><` clash at the midpoint of mutual
+      // adjacencies. Swap "vee" for chevron/circle/diamond/tee here if
+      // you want a different style.
       {
         selector: "edge",
         style: {
           width: 1,
           "line-color": "#666",
           "curve-style": "bezier",
-          "mid-target-arrow-shape": "triangle",
+          "mid-target-arrow-shape": "vee",
           "mid-target-arrow-color": "#666",
           "arrow-scale": 1.4,
           "source-endpoint": "outside-to-line",
@@ -264,15 +264,9 @@
           "target-distance-from-node": 1,
         },
       },
-      // Bidirectional adjacency: swap to lighter "vee" arrows for both
-      // sides. Two filled triangles facing each other looked too heavy;
-      // two open vees give the same `><` directional read but visually
-      // lighter. Swap "vee" for "chevron", "circle", "diamond", or "tee"
-      // if you prefer a different style.
       {
         selector: "edge.bidirectional",
         style: {
-          "mid-target-arrow-shape": "vee",
           "mid-source-arrow-shape": "vee",
           "mid-source-arrow-color": "#666",
         },

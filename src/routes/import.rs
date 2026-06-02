@@ -6,7 +6,7 @@ use axum::{
     Router,
 };
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::state::AppState;
@@ -18,24 +18,63 @@ pub(crate) struct ImportForm {
     ip: String,
 }
 
+#[derive(Serialize, Default)]
+struct ImportedDevice {
+    serial: String,
+    asset_tag: String,
+    sku: String,
+    platform: String,
+    vendor: String,
+    macs: String,
+}
+
+#[derive(Serialize, Default)]
+struct ImportResultCtx {
+    total: usize,
+    ip: String,
+    registered: usize,
+    devices: Vec<ImportedDevice>,
+    errors: Vec<String>,
+    current_config_saved: Option<String>,
+    logical_name_detected: bool,
+    logical_name: String,
+    asset_tag: String,
+    extract_ok: bool,
+    extract_partial: bool,
+    extract_failed: Option<String>,
+    compile_error: String,
+}
+
+fn render_message(state: &AppState, title: &str, msg: &str, back: Option<(&str, &str)>) -> Response {
+    let html = state
+        .templates
+        .render_message(title, Some(msg), None, back)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+fn render_message_with_html(
+    state: &AppState,
+    title: &str,
+    html_body: &str,
+    back: Option<(&str, &str)>,
+) -> Response {
+    let html = state
+        .templates
+        .render_message(title, None, Some(html_body), back)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-pub async fn import_page(State(_state): State<AppState>) -> Response {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Import Device</title></head>
-<body>
-<h1>Import Device</h1>
-<p>Connect to a Cisco IOS device via SSH to discover and register it in the asset inventory.</p>
-<form method="POST" action="/import">
-  <label for="ip">IP Address:</label><br>
-  <input type="text" id="ip" name="ip" required placeholder="192.168.1.1"><br><br>
-  <button type="submit">Import Device</button>
-</form>
-<p><a href="/assets">Back to Assets</a></p>
-</body>
-</html>"#;
-
+pub async fn import_page(State(state): State<AppState>) -> Response {
+    #[derive(Serialize)]
+    struct Empty {}
+    let html = state
+        .templates
+        .render_page(&state.templates.import_form, "Import Device", "", &Empty {})
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 
@@ -47,14 +86,11 @@ pub async fn import_device(
     if form.ip.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Html(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Import Error</h1>
-<p>IP address is required.</p>
-<a href="/import">Try again</a>
-</body></html>"#
-                    .to_string(),
+            render_message(
+                &state,
+                "Import Error",
+                "IP address is required.",
+                Some(("/import", "Try again")),
             ),
         )
             .into_response();
@@ -65,9 +101,11 @@ pub async fn import_device(
         None => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Html(
-                    "<html><body><h1>Error</h1><p>Asset inventory is not configured.</p></body></html>"
-                        .to_string(),
+                render_message(
+                    &state,
+                    "Error",
+                    "Asset inventory is not configured.",
+                    None,
                 ),
             )
                 .into_response();
@@ -88,18 +126,17 @@ pub async fn import_device(
         Ok(c) => c,
         Err(e) => {
             warn!(ip = %ip, error = %e, "SSH connection failed");
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Connection Failed</h1>
-<p>Could not connect to <strong>{ip}</strong> via SSH:</p>
-<pre>{error}</pre>
-<a href="/import">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response();
+            let body = format!(
+                "<p>Could not connect to <strong>{}</strong> via SSH:</p><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+            );
+            return render_message_with_html(
+                &state,
+                "Connection Failed",
+                &body,
+                Some(("/import", "Try again")),
+            );
         }
     };
 
@@ -109,18 +146,17 @@ pub async fn import_device(
         Err(e) => {
             warn!(ip = %ip, error = %e, "Failed to run 'show version'");
             let _ = conn.disconnect().await;
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Command Failed</h1>
-<p>Connected to <strong>{ip}</strong> but 'show version' failed:</p>
-<pre>{error}</pre>
-<a href="/import">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response();
+            let body = format!(
+                "<p>Connected to <strong>{}</strong> but 'show version' failed:</p><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+            );
+            return render_message_with_html(
+                &state,
+                "Command Failed",
+                &body,
+                Some(("/import", "Try again")),
+            );
         }
     };
 
@@ -129,18 +165,17 @@ pub async fn import_device(
         Err(e) => {
             warn!(ip = %ip, error = %e, "Failed to run 'show inventory'");
             let _ = conn.disconnect().await;
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Command Failed</h1>
-<p>Connected to <strong>{ip}</strong> but 'show inventory' failed:</p>
-<pre>{error}</pre>
-<a href="/import">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-            ))
-            .into_response();
+            let body = format!(
+                "<p>Connected to <strong>{}</strong> but 'show inventory' failed:</p><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+            );
+            return render_message_with_html(
+                &state,
+                "Command Failed",
+                &body,
+                Some(("/import", "Try again")),
+            );
         }
     };
 
@@ -190,43 +225,43 @@ pub async fn import_device(
         Ok(list) => list,
         Err(e) => {
             warn!(ip = %ip, error = %e, "Failed to parse device metadata");
-            return Html(format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Parse Failed</h1>
-<p>Connected to <strong>{ip}</strong> and ran commands, but could not parse device metadata:</p>
-<pre>{error}</pre>
-<h2>show version output</h2>
-<pre>{sv}</pre>
-<h2>show inventory output</h2>
-<pre>{si}</pre>
-<a href="/import">Try again</a>
-</body></html>"#,
-                ip = html_escape(&ip),
-                error = html_escape(&format!("{e}")),
-                sv = html_escape(&show_version),
-                si = html_escape(&show_inventory),
-            ))
-            .into_response();
+            let body = format!(
+                "<p>Connected to <strong>{}</strong> and ran commands, but could not parse device metadata:</p><pre>{}</pre>\
+                 <h2>show version output</h2><pre>{}</pre>\
+                 <h2>show inventory output</h2><pre>{}</pre>",
+                html_escape(&ip),
+                html_escape(&format!("{e}")),
+                html_escape(&show_version),
+                html_escape(&show_inventory),
+            );
+            return render_message_with_html(
+                &state,
+                "Parse Failed",
+                &body,
+                Some(("/import", "Try again")),
+            );
         }
     };
 
     if metadata_list.is_empty() {
-        return Html(format!(
-            r#"<!DOCTYPE html>
-<html><body>
-<h1>No Devices Found</h1>
-<p>Connected to <strong>{ip}</strong> but no device metadata could be extracted.</p>
-<a href="/import">Try again</a>
-</body></html>"#,
-            ip = html_escape(&ip),
-        ))
-        .into_response();
+        let body = format!(
+            "<p>Connected to <strong>{}</strong> but no device metadata could be extracted.</p>",
+            html_escape(&ip),
+        );
+        return render_message_with_html(
+            &state,
+            "No Devices Found",
+            &body,
+            Some(("/import", "Try again")),
+        );
     }
 
     // 4. Register each discovered device via ayciam (idempotent, proper S-tags, dedup)
-    let mut results_html = String::new();
-    let mut registered_count = 0;
+    let mut ctx = ImportResultCtx {
+        ip: ip.clone(),
+        total: metadata_list.len(),
+        ..Default::default()
+    };
 
     for metadata in &metadata_list {
         match ayciam::ensure_registered(&inv_path, metadata, "aynmsgui").await {
@@ -247,33 +282,21 @@ pub async fn import_device(
                     record.platform.as_deref(),
                     None,
                 ).await;
-                registered_count += 1;
-                results_html.push_str(&format!(
-                    r#"<div style="border:1px solid #ccc; padding:1rem; margin:0.5rem 0;">
-<h3>Device: {serial}</h3>
-<table>
-<tr><th>Asset Tag</th><td>{tag}</td></tr>
-<tr><th>Serial</th><td>{serial}</td></tr>
-<tr><th>SKU</th><td>{sku}</td></tr>
-<tr><th>Platform</th><td>{platform}</td></tr>
-<tr><th>Vendor</th><td>{vendor}</td></tr>
-<tr><th>MACs</th><td>{macs}</td></tr>
-</table>
-</div>"#,
-                    tag = html_escape(&record.asset_tag),
-                    serial = html_escape(&record.serial_number),
-                    sku = html_escape(&record.sku),
-                    platform = html_escape(record.platform.as_deref().unwrap_or("-")),
-                    vendor = html_escape(&record.vendor),
-                    macs = html_escape(&record.mac_addresses.join(", ")),
-                ));
+                ctx.registered += 1;
+                ctx.devices.push(ImportedDevice {
+                    asset_tag: record.asset_tag.clone(),
+                    serial: record.serial_number.clone(),
+                    sku: record.sku.clone(),
+                    platform: record.platform.clone().unwrap_or_else(|| "-".to_string()),
+                    vendor: record.vendor.clone(),
+                    macs: record.mac_addresses.join(", "),
+                });
             }
             Err(e) => {
                 warn!(serial = %metadata.serial_number, error = %e, "Failed to register device");
-                results_html.push_str(&format!(
-                    "<p style='color:red'>Failed to register {}: {}</p>",
-                    html_escape(&metadata.serial_number),
-                    html_escape(&format!("{e}")),
+                ctx.errors.push(format!(
+                    "Failed to register {}: {}",
+                    metadata.serial_number, e
                 ));
             }
         }
@@ -302,10 +325,7 @@ pub async fn import_device(
                         Ok(()) => {
                             info!(serial = %sv_info.serial_number, path = %cfg_path.display(),
                                 "Saved current config during import");
-                            results_html.push_str(&format!(
-                                "<p>Current config saved to <code>{}</code></p>",
-                                html_escape(&cfg_path.display().to_string()),
-                            ));
+                            ctx.current_config_saved = Some(cfg_path.display().to_string());
                         }
                         Err(e) => {
                             warn!(error = %e, path = %cfg_path.display(), "Failed to save current config");
@@ -327,10 +347,9 @@ pub async fn import_device(
             if tag_matches {
                 info!(hostname = %hostname, logical_name = %name, asset_tag = %asset_tag,
                     "Hostname matches naming convention, auto-naming logical device");
-                results_html.push_str(&format!(
-                    "<p>Auto-detected logical device name: <strong>{}</strong> (asset tag {} matches)</p>",
-                    html_escape(&name), html_escape(asset_tag),
-                ));
+                ctx.logical_name_detected = true;
+                ctx.logical_name = name.clone();
+                ctx.asset_tag = asset_tag.to_string();
                 name
             } else {
                 hostname.to_string()
@@ -422,31 +441,22 @@ pub async fn import_device(
                         }
 
                         // Compile the extracted config to produce target .cfg files
+                        ctx.logical_name = logical_name.clone();
                         match crate::routes::devices::compile_device_config(&logical_name, base_dir, &state.config) {
                             Ok(()) => {
                                 info!(name = %logical_name, "Config compiled after import");
-                                results_html.push_str(&format!(
-                                    "<p style='color:green'>Config extracted and compiled for logical device <strong>{}</strong>.</p>",
-                                    html_escape(&logical_name),
-                                ));
+                                ctx.extract_ok = true;
                             }
                             Err(e) => {
                                 warn!(name = %logical_name, error = %e, "Config compilation failed after import");
-                                results_html.push_str(&format!(
-                                    "<p style='color:green'>Config extracted for logical device <strong>{}</strong>.</p>\
-                                     <p style='color:orange'>Compilation failed: {}</p>",
-                                    html_escape(&logical_name),
-                                    html_escape(&format!("{e}")),
-                                ));
+                                ctx.extract_partial = true;
+                                ctx.compile_error = format!("{e}");
                             }
                         }
                     }
                     Ok(Err(e)) => {
                         warn!(logical_name = %logical_name, error = %e, "Extraction pipeline failed");
-                        results_html.push_str(&format!(
-                            "<p style='color:orange'>Config extraction failed: {}</p>",
-                            html_escape(&format!("{e}")),
-                        ));
+                        ctx.extract_failed = Some(format!("{e}"));
                     }
                     Err(e) => {
                         warn!(error = %e, "spawn_blocking panicked during extraction");
@@ -461,20 +471,11 @@ pub async fn import_device(
         cache.invalidate();
     }
 
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html><body>
-<h1>Import Complete</h1>
-<p>Discovered {total} device(s) at <strong>{ip}</strong>, registered {registered}.</p>
-{results}
-<p><a href="/assets">View Assets</a> | <a href="/import">Import Another</a></p>
-</body></html>"#,
-        total = metadata_list.len(),
-        ip = html_escape(&ip),
-        registered = registered_count,
-        results = results_html,
-    ))
-    .into_response()
+    let html = state
+        .templates
+        .render_page(&state.templates.import_result, "Import Complete", "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
 }
 
 /// HTML-escape a string to prevent XSS from device-supplied data.

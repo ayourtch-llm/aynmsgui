@@ -19,6 +19,10 @@ pub struct Templates {
     pub operations: mustache::Template,
     pub settings_credentials: mustache::Template,
     pub assignments: mustache::Template,
+    pub diff_overview: mustache::Template,
+    pub diff_detail: mustache::Template,
+    pub import_form: mustache::Template,
+    pub import_result: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -34,6 +38,10 @@ impl Templates {
             operations: compile(&dir.join("operations.html.mustache"))?,
             settings_credentials: compile(&dir.join("settings_credentials.html.mustache"))?,
             assignments: compile(&dir.join("assignments.html.mustache"))?,
+            diff_overview: compile(&dir.join("diff_overview.html.mustache"))?,
+            diff_detail: compile(&dir.join("diff_detail.html.mustache"))?,
+            import_form: compile(&dir.join("import_form.html.mustache"))?,
+            import_result: compile(&dir.join("import_result.html.mustache"))?,
             message: compile(&dir.join("message.html.mustache"))?,
         })
     }

@@ -1,0 +1,27 @@
+<h1>Import Complete</h1>
+<p>Discovered {{total}} device(s) at <strong>{{ip}}</strong>, registered {{registered}}.</p>
+
+{{#devices}}
+<div style="border:1px solid #ccc; padding:1rem; margin:0.5rem 0;">
+<h3>Device: {{serial}}</h3>
+<table>
+<tr><th>Asset Tag</th><td>{{asset_tag}}</td></tr>
+<tr><th>Serial</th><td>{{serial}}</td></tr>
+<tr><th>SKU</th><td>{{sku}}</td></tr>
+<tr><th>Platform</th><td>{{platform}}</td></tr>
+<tr><th>Vendor</th><td>{{vendor}}</td></tr>
+<tr><th>MACs</th><td>{{macs}}</td></tr>
+</table>
+</div>
+{{/devices}}
+
+{{#errors}}<p style="color:red">{{.}}</p>{{/errors}}
+
+{{#current_config_saved}}<p>Current config saved to <code>{{.}}</code></p>{{/current_config_saved}}
+{{#logical_name_detected}}<p>Auto-detected logical device name: <strong>{{logical_name}}</strong> (asset tag {{asset_tag}} matches)</p>{{/logical_name_detected}}
+{{#extract_ok}}<p style='color:green'>Config extracted and compiled for logical device <strong>{{logical_name}}</strong>.</p>{{/extract_ok}}
+{{#extract_partial}}<p style='color:green'>Config extracted for logical device <strong>{{logical_name}}</strong>.</p>
+<p style='color:orange'>Compilation failed: {{compile_error}}</p>{{/extract_partial}}
+{{#extract_failed}}<p style='color:orange'>Config extraction failed: {{.}}</p>{{/extract_failed}}
+
+<p><a href="/assets">View Assets</a> | <a href="/import">Import Another</a></p>

@@ -19,6 +19,13 @@ pub struct DiffOverviewItem {
     pub device_name: String,
     pub has_diff: bool,
     pub diff_preview: String,
+    pub status_class: &'static str,
+    pub status_text: &'static str,
+}
+
+#[derive(Serialize)]
+struct DiffOverviewCtx {
+    items: Vec<DiffOverviewItem>,
 }
 
 #[derive(Serialize)]
@@ -39,8 +46,15 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
     ) {
         (Some(t), Some(c)) if t.exists() && c.exists() => (t, c),
         _ => {
-            let html = "<html><body><p>Config diff not configured: \
-                        target_configs_path or current_configs_path is not set</p></body></html>";
+            let html = state
+                .templates
+                .render_message(
+                    "Config Diff",
+                    Some("Config diff not configured: target_configs_path or current_configs_path is not set"),
+                    None,
+                    None,
+                )
+                .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
             return Html(html).into_response();
         }
     };
@@ -55,10 +69,11 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         Ok(e) => e,
         Err(err) => {
             warn!(path = %target_path.display(), error = %err, "Failed to read target configs directory");
-            let html = format!(
-                "<html><body><p>Failed to read target configs directory: {}</p></body></html>",
-                err
-            );
+            let msg = format!("Failed to read target configs directory: {err}");
+            let html = state
+                .templates
+                .render_message("Config Diff", Some(&msg), None, None)
+                .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
             return Html(html).into_response();
         }
     };
@@ -138,54 +153,23 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             device_name,
             has_diff,
             diff_preview,
+            status_class: if has_diff { "has-diff" } else { "no-diff" },
+            status_text: if has_diff { "Changes" } else { "No changes" },
         });
     }
 
     // Sort by name for stable output
     items.sort_by(|a, b| a.name.cmp(&b.name));
 
-    let rows: String = items
-        .iter()
-        .map(|item| {
-            let status_class = if item.has_diff { "has-diff" } else { "no-diff" };
-            let status_text = if item.has_diff { "Changes" } else { "No changes" };
-            let action = if item.has_diff {
-                format!("<a href=\"/apply/{name}\">Apply</a>", name = item.name)
-            } else {
-                String::new()
-            };
-            format!(
-                "<tr class=\"{status_class}\">\
-                 <td><a href=\"/diff/{name}\">{name}</a></td>\
-                 <td>{device_name}</td>\
-                 <td>{status_text}</td>\
-                 <td><pre>{preview}</pre></td>\
-                 <td>{action}</td>\
-                 </tr>",
-                status_class = status_class,
-                name = item.name,
-                device_name = html_escape(&item.device_name),
-                status_text = status_text,
-                preview = html_escape(&item.diff_preview),
-                action = action,
-            )
-        })
-        .collect();
-
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Config Diff Overview</title></head>
-<body>
-<h1>Config Diff Overview</h1>
-<table>
-<tr><th>Serial</th><th>Logical Device</th><th>Status</th><th>Preview</th><th>Action</th></tr>
-{rows}
-</table>
-</body>
-</html>"#,
-        rows = rows,
-    );
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.diff_overview,
+            "Config Diff Overview",
+            "",
+            &DiffOverviewCtx { items },
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
 
     Html(html).into_response()
 }
@@ -200,7 +184,10 @@ pub async fn diff_detail(
     ) {
         (Some(t), Some(c)) if t.exists() => (t, c),
         _ => {
-            let html = "<html><body><p>Config diff not configured</p></body></html>";
+            let html = state
+                .templates
+                .render_message("Config Diff", Some("Config diff not configured"), None, None)
+                .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
             return Html(html).into_response();
         }
     };
@@ -215,14 +202,12 @@ pub async fn diff_detail(
         Ok(c) => aycfgapply::normalize::normalize_target_config(&c),
         Err(err) => {
             warn!(path = %target_file.display(), error = %err, "Target config not found");
-            return (
-                StatusCode::NOT_FOUND,
-                Html(format!(
-                    "<html><body><p>Config '{}' not found</p></body></html>",
-                    name
-                )),
-            )
-                .into_response();
+            let msg = format!("Config '{}' not found", name);
+            let html = state
+                .templates
+                .render_message("Not Found", Some(&msg), None, Some(("/diff", "Back to Diffs")))
+                .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+            return (StatusCode::NOT_FOUND, Html(html)).into_response();
         }
     };
 
@@ -254,45 +239,17 @@ pub async fn diff_detail(
     let view = DiffDetailView {
         name: name.clone(),
         device_name,
-        delta: delta.clone(),
-        target_config: target_config.clone(),
-        current_config: current_config.clone(),
+        delta,
+        target_config,
+        current_config,
     };
 
-    let html = render_diff_detail(&view);
+    let title = format!("Config Diff: {name}");
+    let html = state
+        .templates
+        .render_page(&state.templates.diff_detail, &title, "", &view)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
-}
-
-fn render_diff_detail(view: &DiffDetailView) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html>
-<head><meta charset="UTF-8"><title>Config Diff: {name}</title></head>
-<body>
-<h1>Config Diff: {name}</h1>
-<p>Logical Device: <strong>{device_name}</strong></p>
-<h2>Delta (commands to apply)</h2>
-<pre>{delta}</pre>
-<h2>Target Config</h2>
-<pre>{target}</pre>
-<h2>Current Config</h2>
-<pre>{current}</pre>
-</body>
-</html>"#,
-        name = view.name,
-        device_name = html_escape(&view.device_name),
-        delta = html_escape(&view.delta),
-        target = html_escape(&view.target_config),
-        current = html_escape(&view.current_config),
-    )
-}
-
-/// Minimal HTML escaping for embedding config text inside <pre> blocks.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────

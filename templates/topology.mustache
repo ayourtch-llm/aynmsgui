@@ -5,8 +5,8 @@
   <label><input type="checkbox" id="topology-managed-only"> Managed only</label>
   <label>Layout:
     <select id="topology-layout">
-      <option value="ranked" selected>ranked (hub-and-spoke)</option>
-      <option value="fcose">fcose (compound)</option>
+      <option value="fcose" selected>fcose (compound)</option>
+      <option value="ranked">ranked (hub-and-spoke)</option>
       <option value="cose">cose</option>
       <option value="concentric">concentric</option>
       <option value="grid">grid</option>
@@ -14,6 +14,7 @@
       <option value="breadthfirst">breadth-first</option>
     </select>
   </label>
+  <label><input type="checkbox" id="topology-autorefresh" checked> Auto-refresh (30s)</label>
   <span id="topology-status" style="color:#666; font-size:0.9em;">loading…</span>
   <span style="margin-left:auto; color:#666; font-size:0.85em;">
     Gray = managed · arrow points TO the device source sees · ctrl+right-click cycles BFS selection.

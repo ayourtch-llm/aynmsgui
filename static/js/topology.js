@@ -217,8 +217,12 @@
         existing.bidirectional = true;
         return;
       }
+      // Use the canonical pair key as the id, so the same physical link
+      // keeps the same id across polls — important for the diff-merge
+      // path on auto-refresh (server-side IDs depend on which direction
+      // it saw first).
       pairs.set(key, {
-        id: e.id,
+        id: "pair:" + key,
         source: src,
         target: tgt,
         sport: e.sport,
@@ -898,6 +902,144 @@
       });
   }
 
+  // Position a freshly-added device near the centroid of its connected
+  // neighbors so it's at least in the neighborhood, not stuck at (0,0).
+  function positionNewDevice(node) {
+    var positions = [];
+    deviceNeighborsOf(node.id()).forEach(function (nid) {
+      var n = cy.getElementById(nid);
+      if (n.length && n.position()) positions.push(n.position());
+    });
+    if (!positions.length) {
+      node.position({ x: 0, y: 0 });
+      return;
+    }
+    var avgX = 0, avgY = 0;
+    positions.forEach(function (p) { avgX += p.x; avgY += p.y; });
+    avgX /= positions.length;
+    avgY /= positions.length;
+    // small jitter so multiple new neighbors of the same hub don't stack
+    node.position({
+      x: avgX + (Math.random() - 0.5) * 100,
+      y: avgY + (Math.random() - 0.5) * 100,
+    });
+  }
+
+  // Incrementally merge fresh /topology/json into the existing cy graph
+  // without disturbing existing node positions. Adds new nodes/edges,
+  // removes ones that vanished, updates data on existing ones.
+  function mergeUpdate(newData) {
+    if (!cy) {
+      lastData = newData;
+      render();
+      return;
+    }
+    var managedOnly = document.getElementById("topology-managed-only").checked;
+    var newEls = buildElements(newData, managedOnly);
+
+    // Build maps of new elements by id
+    var newById = {};
+    newEls.forEach(function (el) { newById[el.data.id] = el; });
+
+    // 1) Remove elements no longer present
+    var toRemove = [];
+    cy.elements().forEach(function (el) {
+      if (!newById[el.id()]) toRemove.push(el);
+    });
+    if (toRemove.length) cy.remove(cy.collection(toRemove));
+
+    // 2) Add new elements; update existing ones in place.
+    //    Add devices first (parents), then port-children, then edges.
+    //    Within "add new", track newly-added devices so we can position
+    //    them after all elements are present (so port-children → edges
+    //    don't refer to unknown ids).
+    var addedDeviceIds = [];
+
+    var sorted = newEls.slice().sort(function (a, b) {
+      // devices before ports before edges
+      var priority = function (el) {
+        if (el.group === "edges") return 2;
+        if (el.classes && el.classes.indexOf("port") >= 0) return 1;
+        return 0;
+      };
+      return priority(a) - priority(b);
+    });
+
+    sorted.forEach(function (el) {
+      var existing = cy.getElementById(el.data.id);
+      if (existing.length === 0) {
+        cy.add(el);
+        if (el.group === "nodes" && el.classes && el.classes.indexOf("device") >= 0) {
+          addedDeviceIds.push(el.data.id);
+        }
+      } else {
+        // Update data fields (label, description, ip, etc.) without
+        // touching the position.
+        existing.data(el.data);
+        // If managed-only / classes changed, refresh.
+        if (el.classes) {
+          var oldClasses = (existing.classes() || []).join(" ");
+          if (oldClasses !== el.classes) {
+            existing.classes(el.classes);
+          }
+        }
+      }
+    });
+
+    // Position any newly-added devices near their connected neighbors,
+    // unless a saved position exists for them.
+    var saved = loadSavedPositions();
+    addedDeviceIds.forEach(function (id) {
+      var node = cy.getElementById(id);
+      if (!node.length) return;
+      var sp = saved && saved[id];
+      if (sp) {
+        node.position(sp);
+      } else {
+        positionNewDevice(node);
+      }
+    });
+
+    // Realign port-children for any device whose port set changed.
+    alignChildrenInColumns();
+
+    // Persist the updated positions (new ones are now seeded).
+    saveCurrentPositions();
+
+    lastData = newData;
+    var status = document.getElementById("topology-status");
+    if (status) {
+      var when = newData.fetched_at
+        ? new Date(newData.fetched_at).toLocaleTimeString()
+        : "never";
+      var vd = cy.nodes(".device").length;
+      var ve = cy.edges().length;
+      status.textContent =
+        vd + "/" + newData.node_count + " devices · " +
+        ve + "/" + newData.edge_count + " adjacencies · CDP sweep: " + when;
+    }
+  }
+
+  function autoLoad() {
+    fetch("/topology/json")
+      .then(function (r) { return r.json(); })
+      .then(function (data) { mergeUpdate(data); })
+      .catch(function (e) { console.warn("topology auto-refresh failed:", e); });
+  }
+
+  var AUTO_REFRESH_MS = 30000;
+  var autoRefreshTimer = null;
+  function startAutoRefresh() {
+    if (autoRefreshTimer) return;
+    autoRefreshTimer = setInterval(autoLoad, AUTO_REFRESH_MS);
+  }
+  function stopAutoRefresh() {
+    if (autoRefreshTimer) {
+      clearInterval(autoRefreshTimer);
+      autoRefreshTimer = null;
+    }
+  }
+
   function resetLayout() {
     if (!confirm("Clear saved layout and re-run the auto-layout?")) return;
     clearSavedPositions();
@@ -914,6 +1056,14 @@
       clearSavedPositions();
       render();
     });
+    // Auto-refresh: poll /topology/json every 30s and diff-merge into
+    // the existing graph, preserving manual positions.
+    var autoToggle = document.getElementById("topology-autorefresh");
+    autoToggle.addEventListener("change", function () {
+      if (autoToggle.checked) startAutoRefresh();
+      else stopAutoRefresh();
+    });
     load();
+    if (autoToggle.checked) startAutoRefresh();
   };
 })();

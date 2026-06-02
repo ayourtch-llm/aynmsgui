@@ -405,6 +405,185 @@
     return common;
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  //  Custom "ranked" layout (BFS-from-leaves + radial placement).
+  //
+  //  Rank assignment:
+  //    - Each device starts unranked. Leaves (degree ≤ 1) get rank 1.
+  //    - Each subsequent pass finds unranked devices adjacent to any
+  //      already-ranked device, assigning them rank = max_rank + 1 + degree.
+  //    - Disconnected components / unbreakable cycles get the next free
+  //      rank in arbitrary order.
+  //
+  //  Placement:
+  //    - Sort devices by rank descending (most-central hub first).
+  //    - Place rank-1 (= highest rank) device at origin.
+  //    - Each subsequent device picks its highest-ranked already-placed
+  //      neighbor as a "parent", then places itself at the angle around
+  //      that parent that is most distant from any sibling already placed
+  //      around the same parent. Distance from parent is fixed (spacing).
+  //
+  //  Port-position seeding is a TODO — currently angles ignore which port
+  //  on the parent the edge lands on.
+
+  function computeRanks(devices) {
+    // Build device-level adjacency (unique neighbors only) from the
+    // port-to-port edges.
+    var neighbors = {};
+    devices.forEach(function (d) { neighbors[d.id()] = new Set(); });
+    cy.edges().forEach(function (e) {
+      var s = e.source().isChild() ? e.source().parent().first().id() : e.source().id();
+      var t = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
+      if (s !== t && neighbors[s] && neighbors[t]) {
+        neighbors[s].add(t);
+        neighbors[t].add(s);
+      }
+    });
+
+    var ranks = {};
+    var ranked = new Set();
+    var maxRank = 0;
+
+    // Pass 1: leaves
+    devices.forEach(function (d) {
+      var id = d.id();
+      if (neighbors[id].size <= 1) {
+        ranks[id] = 1;
+        ranked.add(id);
+      }
+    });
+    maxRank = ranked.size > 0 ? 1 : 0;
+
+    // No leaves at all (everything in cycles) — seed with the lowest-degree node.
+    if (ranked.size === 0 && devices.length > 0) {
+      var seed = devices[0].id();
+      var minDeg = Infinity;
+      devices.forEach(function (d) {
+        var deg = neighbors[d.id()].size;
+        if (deg < minDeg) { minDeg = deg; seed = d.id(); }
+      });
+      ranks[seed] = 1;
+      ranked.add(seed);
+      maxRank = 1;
+    }
+
+    // Subsequent passes
+    while (ranked.size < devices.length) {
+      var thisRound = [];
+      devices.forEach(function (d) {
+        var id = d.id();
+        if (ranked.has(id)) return;
+        var connects = false;
+        neighbors[id].forEach(function (n) { if (ranked.has(n)) connects = true; });
+        if (connects) thisRound.push(id);
+      });
+      if (thisRound.length === 0) {
+        // Disconnected component — pick lowest-degree unranked.
+        var pick = null, minDegU = Infinity;
+        devices.forEach(function (d) {
+          if (ranked.has(d.id())) return;
+          var deg = neighbors[d.id()].size;
+          if (deg < minDegU) { minDegU = deg; pick = d.id(); }
+        });
+        if (pick) {
+          ranks[pick] = maxRank + 1;
+          ranked.add(pick);
+          maxRank += 1;
+        } else {
+          break;
+        }
+        continue;
+      }
+      thisRound.forEach(function (id) {
+        ranks[id] = maxRank + 1 + neighbors[id].size;
+        ranked.add(id);
+      });
+      Object.keys(ranks).forEach(function (k) {
+        if (ranks[k] > maxRank) maxRank = ranks[k];
+      });
+    }
+
+    return { ranks: ranks, neighbors: neighbors };
+  }
+
+  // Pick the angle (in radians, range -π..π) that is most distant from
+  // any angle already taken around the same parent.
+  function pickFreeAngle(taken, segments) {
+    if (!taken || taken.length === 0) return 0;
+    var best = 0, bestDist = -1;
+    for (var i = 0; i < segments; i++) {
+      var a = (i / segments) * 2 * Math.PI - Math.PI;
+      var minDist = Infinity;
+      taken.forEach(function (t) {
+        var d = Math.abs(a - t);
+        if (d > Math.PI) d = 2 * Math.PI - d;
+        if (d < minDist) minDist = d;
+      });
+      if (minDist > bestDist) { bestDist = minDist; best = a; }
+    }
+    return best;
+  }
+
+  function rankedLayout() {
+    var devices = cy.nodes(".device").toArray();
+    if (!devices.length) return;
+    var r = computeRanks(devices);
+    var ranks = r.ranks;
+    var neighbors = r.neighbors;
+
+    var sorted = devices.slice().sort(function (a, b) {
+      return (ranks[b.id()] || 0) - (ranks[a.id()] || 0);
+    });
+
+    var placed = {};
+    var anglesByParent = {};
+    var spacing = 350;
+
+    sorted.forEach(function (d, idx) {
+      var id = d.id();
+      if (idx === 0) {
+        placed[id] = { x: 0, y: 0 };
+        anglesByParent[id] = [];
+        return;
+      }
+
+      // Highest-ranked placed neighbor becomes the parent.
+      var placedN = [];
+      neighbors[id].forEach(function (n) { if (placed[n]) placedN.push(n); });
+
+      if (placedN.length === 0) {
+        // Disconnected — place far out at a random angle from origin.
+        var angle0 = Math.random() * 2 * Math.PI;
+        placed[id] = {
+          x: Math.cos(angle0) * spacing * 4,
+          y: Math.sin(angle0) * spacing * 4,
+        };
+        anglesByParent[id] = [];
+        return;
+      }
+      placedN.sort(function (a, b) { return (ranks[b] || 0) - (ranks[a] || 0); });
+      var parent = placedN[0];
+      var parentPos = placed[parent];
+
+      var taken = anglesByParent[parent] || [];
+      var angle = pickFreeAngle(taken, 24);
+      anglesByParent[parent] = taken.concat([angle]);
+      anglesByParent[id] = [];
+
+      placed[id] = {
+        x: parentPos.x + Math.cos(angle) * spacing,
+        y: parentPos.y + Math.sin(angle) * spacing,
+      };
+    });
+
+    cy.startBatch();
+    Object.keys(placed).forEach(function (id) {
+      var n = cy.getElementById(id);
+      if (n.length) n.position(placed[id]);
+    });
+    cy.endBatch();
+  }
+
   // After the macro layout runs, place each device's port-children in a
   // vertical column centered on the device, sorted by port name. The parent
   // auto-resizes to fit; cy.fit() afterward refreshes the viewport.
@@ -429,9 +608,14 @@
   function fitAndLayout() {
     if (!cy) return;
     var name = document.getElementById("topology-layout").value;
-    cy.layout(layoutOptions(name)).run();
-    if (name === "fcose" || name === "cose") {
+    if (name === "ranked") {
+      rankedLayout();
       alignChildrenInColumns();
+    } else {
+      cy.layout(layoutOptions(name)).run();
+      if (name === "fcose" || name === "cose") {
+        alignChildrenInColumns();
+      }
     }
     cy.fit(undefined, 30);
   }

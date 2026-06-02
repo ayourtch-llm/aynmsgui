@@ -241,18 +241,19 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
+      // Arrows render in the MIDDLE of the line, not at the ends. End
+      // arrows get visually swallowed by the port boxes (especially the
+      // arrowhead, which lands right at the box border); mid arrows
+      // float along the visible line and stay legible.
       {
         selector: "edge",
         style: {
           width: 1,
           "line-color": "#666",
           "curve-style": "bezier",
-          "target-arrow-shape": "triangle",
-          "target-arrow-color": "#666",
-          "arrow-scale": 1.1,
-          // Anchor both endpoints just outside the port box outline so
-          // the line is clearly visible from edge-to-edge instead of
-          // disappearing into the port's center.
+          "mid-target-arrow-shape": "triangle",
+          "mid-target-arrow-color": "#666",
+          "arrow-scale": 1.3,
           "source-endpoint": "outside-to-line",
           "target-endpoint": "outside-to-line",
           "source-distance-from-node": 1,
@@ -263,7 +264,7 @@
         selector: "edge:selected",
         style: {
           "line-color": "#2980b9",
-          "target-arrow-color": "#2980b9",
+          "mid-target-arrow-color": "#2980b9",
           width: 2,
         },
       },
@@ -278,26 +279,25 @@
           "background-color": "#eaf3fb",
         },
       },
-      // Bidirectional adjacencies (CDP reported both A→B and B→A) get an
-      // arrow at the source end too, so a single line shows mutual
-      // visibility instead of two parallel arrows.
+      // Bidirectional adjacencies (CDP reported both A→B and B→A) get a
+      // second mid-arrow pointing back toward source, so a single line
+      // shows mutual visibility instead of two parallel arrows.
       {
         selector: "edge.bidirectional",
         style: {
-          "source-arrow-shape": "triangle",
-          "source-arrow-color": "#666",
+          "mid-source-arrow-shape": "triangle",
+          "mid-source-arrow-color": "#666",
         },
       },
-      // Thicken the connecting edge(s) of the selected port too — the
-      // line color matches the highlighted ports at each end. Setting
-      // source-arrow-color too covers the bidirectional case (otherwise
-      // the source arrow would inherit gray from .bidirectional).
+      // Thicken + recolor the line and arrows on highlight. Setting both
+      // mid arrow colors covers the bidirectional case (otherwise the
+      // mid-source-arrow would inherit gray from .bidirectional).
       {
         selector: "edge.highlighted",
         style: {
           "line-color": "#2980b9",
-          "target-arrow-color": "#2980b9",
-          "source-arrow-color": "#2980b9",
+          "mid-target-arrow-color": "#2980b9",
+          "mid-source-arrow-color": "#2980b9",
           width: 3,
         },
       },

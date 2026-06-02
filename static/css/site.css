@@ -127,10 +127,12 @@ li.dropdown { display: inline-block; position: relative; }
     padding: 24px 24px;
     max-width: 1400px;
     margin: 0 auto;
-    /* When a column is resized wider than the container (colresize.js),
-     * scroll horizontally rather than overlap the page. */
-    overflow-x: auto;
 }
+
+/* A table wrapped in .table-scroll scrolls horizontally if its content
+ * exceeds the container — used by list pages so colresize.js can grow
+ * a column past the .main width without pushing the page layout. */
+.table-scroll { overflow-x: auto; }
 
 /* TABLE STYLES */
 table {

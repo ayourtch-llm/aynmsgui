@@ -1,5 +1,6 @@
 <h1>{{heading}}</h1>
 {{> quicksearch}}
+<div class="table-scroll">
 <table id="{{quicksearch_table_id}}">
 <thead><tr><th>Serial</th><th>Asset Tag</th><th>Vendor</th><th>SKU</th><th>Platform</th><th>Hostname</th><th>Last IPv4</th><th>Last IPv6</th><th>Logical Device</th></tr></thead>
 <tbody>
@@ -18,4 +19,5 @@
 {{/rows}}
 </tbody>
 </table>
+</div>
 {{> colresize}}

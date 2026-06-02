@@ -295,6 +295,19 @@ details summary { cursor: pointer; font-weight: 600; color: #1a5276; }
 .quicksearch input { padding: 3px 6px; margin: 0; }
 .quicksearch #totalMatches { margin-left: auto; color: #666; font-size: 0.9em; }
 
+/* COLUMN RESIZE handles (injected by colresize.js into each <th>) */
+.col-resize-handle {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 5px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    user-select: none;
+}
+.col-resize-handle:hover { background: rgba(255, 255, 255, 0.25); }
+
 /* RESPONSIVE */
 @media (max-width: 960px) {
     h1 { font-size: 1.1em; }

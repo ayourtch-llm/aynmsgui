@@ -1,20 +1,22 @@
-// Topology graph powered by Cytoscape.js.
+// Topology graph powered by Cytoscape.js with compound (parent/child) nodes.
 //
-//   initTopology()  — fetch /topology/json once and render.
+// Each switch is a parent node containing one small child node per connected
+// port. Edges connect port → port, so the arrowhead lands precisely on the
+// port it represents — matching the old graphviz table-row layout where each
+// edge anchored to a specific port row.
 //
 // Node styling:
-//   .managed   → gray fill (matches the previous graphviz convention)
-//   default    → white fill, gray border
-// Edge:
-//   triangle arrowhead at target end (source SEES target)
-//   source-label / target-label render the local/remote port near each end
+//   .device.managed   → gray fill, hostname label at top of container
+//   .device.unmanaged → white fill, hostname label at top
+//   .port             → small white box with the port name, inside its parent
+// Edge: triangle arrowhead at target end (source SEES target).
 //
-// Clicking a node populates the side panel with aux info (description,
-// role, ip, platform, version) plus a link to /devices/<name> for
-// managed devices.
+// Clicking a device (the container or any of its ports) populates a side
+// panel with description, role, ip, platform, version, and all adjacencies.
 
 (function () {
   var cy = null;
+  var lastData = null;
 
   function escapeHtml(s) {
     return String(s || "")
@@ -24,8 +26,18 @@
       .replace(/"/g, "&quot;");
   }
 
+  function portChildId(deviceId, portName) {
+    return deviceId + "::" + (portName || "?");
+  }
+
+  function nodeDeviceData(node) {
+    // node may be a port (child) or device (parent); return the device data.
+    if (node.isChild()) return node.parent().first().data();
+    return node.data();
+  }
+
   function renderDetail(node) {
-    var d = node.data();
+    var d = nodeDeviceData(node);
     var parts = [];
     parts.push('<h3 style="margin:0 0 8px 0;">' + escapeHtml(d.label || d.id) + "</h3>");
     if (d.managed) {
@@ -49,17 +61,20 @@
     if (d.href) {
       parts.push('<p style="margin-top:10px;"><a href="' + escapeHtml(d.href) + '">Open device page →</a></p>');
     }
-    var edges = node.connectedEdges();
+    // List adjacencies for this device (collect from all its child ports).
+    var deviceId = d.id;
+    var deviceNode = cy.getElementById(deviceId);
+    var edges = deviceNode.children().connectedEdges();
     if (edges.length) {
       parts.push("<h4 style='margin:12px 0 4px 0;'>Adjacencies (" + edges.length + ")</h4><ul style='padding-left:18px; margin:0;'>");
       edges.forEach(function (e) {
         var ed = e.data();
-        var otherId = ed.source === d.id ? ed.target : ed.source;
-        var direction = ed.source === d.id ? "→" : "←";
-        var localPort = ed.source === d.id ? ed.sport : ed.tport;
-        var remotePort = ed.source === d.id ? ed.tport : ed.sport;
+        var direction = ed._sourceDevice === deviceId ? "→" : "←";
+        var localPort = ed._sourceDevice === deviceId ? ed.sport : ed.tport;
+        var remotePort = ed._sourceDevice === deviceId ? ed.tport : ed.sport;
+        var other = ed._sourceDevice === deviceId ? ed._targetDevice : ed._sourceDevice;
         parts.push("<li><code>" + escapeHtml(localPort || "?") + "</code> " +
-          direction + " <strong>" + escapeHtml(otherId) + "</strong>" +
+          direction + " <strong>" + escapeHtml(other) + "</strong>" +
           " <code>" + escapeHtml(remotePort || "?") + "</code></li>");
       });
       parts.push("</ul>");
@@ -69,56 +84,120 @@
 
   function buildElements(data, managedOnly) {
     var els = [];
-    var visibleIds = new Set();
+    var visibleDevices = new Set();
+
+    // 1. Decide which device nodes are visible.
     data.nodes.forEach(function (n) {
       if (managedOnly && !n.managed) return;
-      visibleIds.add(n.id);
+      visibleDevices.add(n.id);
+    });
+
+    // 2. Emit parent (device) nodes.
+    data.nodes.forEach(function (n) {
+      if (!visibleDevices.has(n.id)) return;
       els.push({
         group: "nodes",
         data: n,
-        classes: n.managed ? "managed" : "unmanaged",
+        classes: "device " + (n.managed ? "managed" : "unmanaged"),
       });
     });
+
+    // 3. Emit one port-child per (device, port) actually used by an edge,
+    //    plus the port-anchored edges themselves.
+    var emittedPorts = new Set();
     data.edges.forEach(function (e) {
-      if (!visibleIds.has(e.source) || !visibleIds.has(e.target)) return;
-      els.push({ group: "edges", data: e });
+      if (!visibleDevices.has(e.source) || !visibleDevices.has(e.target)) return;
+      var srcPortId = portChildId(e.source, e.sport);
+      var tgtPortId = portChildId(e.target, e.tport);
+      if (!emittedPorts.has(srcPortId)) {
+        emittedPorts.add(srcPortId);
+        els.push({
+          group: "nodes",
+          data: { id: srcPortId, parent: e.source, label: e.sport || "?" },
+          classes: "port",
+        });
+      }
+      if (!emittedPorts.has(tgtPortId)) {
+        emittedPorts.add(tgtPortId);
+        els.push({
+          group: "nodes",
+          data: { id: tgtPortId, parent: e.target, label: e.tport || "?" },
+          classes: "port",
+        });
+      }
+      els.push({
+        group: "edges",
+        data: {
+          id: e.id,
+          source: srcPortId,
+          target: tgtPortId,
+          sport: e.sport,
+          tport: e.tport,
+          // Stash the device-level endpoints so renderDetail can compute
+          // direction without re-walking the port hierarchy.
+          _sourceDevice: e.source,
+          _targetDevice: e.target,
+        },
+      });
     });
+
     return els;
   }
 
   function styles() {
     return [
+      // ── Device (compound parent) ─────────────────────────────────────
       {
-        selector: "node",
+        selector: "node.device",
         style: {
           shape: "round-rectangle",
           "background-color": "#ffffff",
+          "background-opacity": 1,
           "border-color": "#888",
           "border-width": 1,
           label: "data(label)",
-          "text-valign": "center",
+          "text-valign": "top",
           "text-halign": "center",
+          "text-margin-y": -4,
           "font-size": "12px",
           "font-family": "Verdana, sans-serif",
-          padding: "8px",
-          width: "label",
-          height: "label",
+          "font-weight": "bold",
+          padding: "10px",
         },
       },
       {
-        selector: "node.managed",
+        selector: "node.device.managed",
         style: {
           "background-color": "#e0e0e0",
           "border-color": "#444",
         },
       },
       {
-        selector: "node:selected",
+        selector: "node.device:selected",
         style: {
           "border-color": "#2980b9",
           "border-width": 3,
         },
       },
+      // ── Port (compound child) ────────────────────────────────────────
+      {
+        selector: "node.port",
+        style: {
+          shape: "rectangle",
+          "background-color": "#ffffff",
+          "border-color": "#aaa",
+          "border-width": 1,
+          label: "data(label)",
+          "text-valign": "center",
+          "text-halign": "center",
+          "font-size": "9px",
+          "font-family": "monospace",
+          padding: "2px",
+          width: "label",
+          height: "label",
+        },
+      },
+      // ── Edges ────────────────────────────────────────────────────────
       {
         selector: "edge",
         style: {
@@ -127,17 +206,15 @@
           "curve-style": "bezier",
           "target-arrow-shape": "triangle",
           "target-arrow-color": "#666",
-          "arrow-scale": 1.2,
-          "source-label": "data(sport)",
-          "target-label": "data(tport)",
-          "font-size": "8px",
-          "font-family": "monospace",
-          color: "#444",
-          "text-background-color": "#fff",
-          "text-background-opacity": 0.85,
-          "text-background-padding": "1px",
-          "source-text-offset": 18,
-          "target-text-offset": 18,
+          "arrow-scale": 1.1,
+        },
+      },
+      {
+        selector: "edge:selected",
+        style: {
+          "line-color": "#2980b9",
+          "target-arrow-color": "#2980b9",
+          width: 2,
         },
       },
     ];
@@ -145,6 +222,20 @@
 
   function layoutOptions(name) {
     var common = { name: name, animate: false, fit: true, padding: 40 };
+    if (name === "fcose") {
+      return Object.assign(common, {
+        quality: "default",
+        randomize: true,
+        nodeSeparation: 80,
+        idealEdgeLength: 120,
+        nodeRepulsion: 8000,
+        gravity: 0.2,
+        gravityCompound: 1.5,
+        numIter: 2500,
+        tile: true,
+        packComponents: true,
+      });
+    }
     if (name === "cose") {
       return Object.assign(common, {
         idealEdgeLength: 220,
@@ -178,11 +269,13 @@
   function fitAndLayout() {
     if (!cy) return;
     var name = document.getElementById("topology-layout").value;
+    // Fall back to cose if fcose extension didn't load.
+    if (name === "fcose" && !cy.layout(layoutOptions("fcose")).options) {
+      name = "cose";
+    }
     cy.layout(layoutOptions(name)).run();
     cy.fit(undefined, 30);
   }
-
-  var lastData = null;
 
   function render() {
     if (!lastData) return;
@@ -201,11 +294,11 @@
     var when = lastData.fetched_at
       ? new Date(lastData.fetched_at).toLocaleTimeString()
       : "never";
-    var visibleNodes = cy.nodes().length;
+    var visibleDevices = cy.nodes(".device").length;
     var visibleEdges = cy.edges().length;
     status.textContent =
-      visibleNodes + "/" + lastData.node_count + " nodes · " +
-      visibleEdges + "/" + lastData.edge_count + " edges · CDP sweep: " + when;
+      visibleDevices + "/" + lastData.node_count + " devices · " +
+      visibleEdges + "/" + lastData.edge_count + " adjacencies · CDP sweep: " + when;
   }
 
   function load() {

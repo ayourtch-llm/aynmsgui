@@ -4,7 +4,8 @@
   <label><input type="checkbox" id="topology-managed-only" checked> Managed only</label>
   <label>Layout:
     <select id="topology-layout">
-      <option value="cose" selected>cose (force)</option>
+      <option value="fcose" selected>fcose (compound)</option>
+      <option value="cose">cose</option>
       <option value="concentric">concentric</option>
       <option value="grid">grid</option>
       <option value="circle">circle</option>
@@ -23,5 +24,9 @@
   </aside>
 </div>
 <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+<script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+<script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+<script>if (window.cytoscape && window.cytoscapeFcose) cytoscape.use(cytoscapeFcose);</script>
 <script src="/static/js/topology.js"></script>
 <script>window.addEventListener("load", function () { initTopology(); });</script>

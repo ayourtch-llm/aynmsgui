@@ -25,6 +25,7 @@ struct DeviceListRow {
 #[derive(Serialize)]
 struct DevicesListCtx {
     rows: Vec<DeviceListRow>,
+    quicksearch_table_id: &'static str,
 }
 
 /// A candidate asset that could be assigned to a logical device (same SKU, recently called home).
@@ -172,7 +173,10 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
             &state.templates.devices_list,
             "Logical Devices",
             "",
-            &DevicesListCtx { rows },
+            &DevicesListCtx {
+                rows,
+                quicksearch_table_id: "devices-table",
+            },
         )
         .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()

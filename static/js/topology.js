@@ -263,10 +263,14 @@
           "source-distance-from-node": 1,
           "target-distance-from-node": 1,
           // Single arrow for unidirectional edges: ▶ near the target end,
-          // pointing toward target.
+          // pointing toward target. text-margin-y nudges the glyph down
+          // onto the line — triangle characters sit on the baseline with
+          // the visible shape above it, so without the offset they end
+          // up "floating" above the autorotated edge.
           "target-label": "▶",
           "target-text-offset": 30,
           "target-text-rotation": "autorotate",
+          "target-text-margin-y": 5,
           "color": "#666",
           "font-size": 14,
           "font-family": "sans-serif",
@@ -282,6 +286,7 @@
           "source-label": "◀",
           "source-text-offset": 30,
           "source-text-rotation": "autorotate",
+          "source-text-margin-y": 5,
         },
       },
       {

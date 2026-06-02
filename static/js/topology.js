@@ -241,30 +241,32 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
-      // Arrows render in the MIDDLE of the line, not at the ends. End
-      // arrows get visually swallowed by the port boxes (especially the
-      // arrowhead, which lands right at the box border); mid arrows
-      // float along the visible line and stay legible.
+      // End arrows, pushed 8px outside the port box outline so they're
+      // visibly separated from the box (not crammed up against it like
+      // the original 1px gap). For bidirectional edges, both source and
+      // target end arrows point outward at their respective ports —
+      // unambiguously "both ends see each other", with no risk of two
+      // mid-arrows pointing at one another.
       {
         selector: "edge",
         style: {
           width: 1,
           "line-color": "#666",
           "curve-style": "bezier",
-          "mid-target-arrow-shape": "triangle",
-          "mid-target-arrow-color": "#666",
-          "arrow-scale": 1.3,
+          "target-arrow-shape": "triangle",
+          "target-arrow-color": "#666",
+          "arrow-scale": 1.4,
           "source-endpoint": "outside-to-line",
           "target-endpoint": "outside-to-line",
-          "source-distance-from-node": 1,
-          "target-distance-from-node": 1,
+          "source-distance-from-node": 8,
+          "target-distance-from-node": 8,
         },
       },
       {
         selector: "edge:selected",
         style: {
           "line-color": "#2980b9",
-          "mid-target-arrow-color": "#2980b9",
+          "target-arrow-color": "#2980b9",
           width: 2,
         },
       },
@@ -280,24 +282,26 @@
         },
       },
       // Bidirectional adjacencies (CDP reported both A→B and B→A) get a
-      // second mid-arrow pointing back toward source, so a single line
-      // shows mutual visibility instead of two parallel arrows.
+      // source-end arrow too, pointing outward at the source port. Combined
+      // with the default target-end arrow at the target port, this renders
+      // as one line with arrows pointing outward at BOTH ends — "both sides
+      // see each other", with no arrows pointing at one another.
       {
         selector: "edge.bidirectional",
         style: {
-          "mid-source-arrow-shape": "triangle",
-          "mid-source-arrow-color": "#666",
+          "source-arrow-shape": "triangle",
+          "source-arrow-color": "#666",
         },
       },
-      // Thicken + recolor the line and arrows on highlight. Setting both
-      // mid arrow colors covers the bidirectional case (otherwise the
-      // mid-source-arrow would inherit gray from .bidirectional).
+      // Highlight: thicker blue line + matching blue arrows on both ends
+      // (source-arrow-color covers the bidirectional case so it doesn't
+      // inherit gray from .bidirectional).
       {
         selector: "edge.highlighted",
         style: {
           "line-color": "#2980b9",
-          "mid-target-arrow-color": "#2980b9",
-          "mid-source-arrow-color": "#2980b9",
+          "target-arrow-color": "#2980b9",
+          "source-arrow-color": "#2980b9",
           width: 3,
         },
       },

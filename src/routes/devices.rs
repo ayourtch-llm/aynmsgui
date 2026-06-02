@@ -20,6 +20,7 @@ struct DeviceListRow {
     name: String,
     hostname: String,
     role: String,
+    description: String,
 }
 
 #[derive(Serialize)]
@@ -64,6 +65,7 @@ struct DeviceDetailCtx {
     name: String,
     hostname: String,
     role: String,
+    description: String,
     serial: String,
     has_serial: bool,
     has_candidates: bool,
@@ -159,8 +161,9 @@ pub async fn list_devices(State(state): State<AppState>) -> Response {
         if let Some(name) = name_opt {
             rows.push(DeviceListRow {
                 name,
-                hostname: fields.0.unwrap_or_else(|| "-".to_string()),
-                role: fields.1.unwrap_or_else(|| "-".to_string()),
+                hostname: fields.hostname.unwrap_or_else(|| "-".to_string()),
+                role: fields.role.unwrap_or_else(|| "-".to_string()),
+                description: fields.description.unwrap_or_else(|| "-".to_string()),
             });
         }
     }
@@ -271,6 +274,12 @@ fn build_device_detail_ctx(
         .unwrap_or("-")
         .to_string();
 
+    let description = raw_config
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-")
+        .to_string();
+
     let current_image = raw_config
         .get("software-image")
         .and_then(|v| v.as_str())
@@ -338,6 +347,7 @@ fn build_device_detail_ctx(
         name: name.to_string(),
         hostname,
         role,
+        description,
         serial: serial_display,
         has_serial,
         has_candidates: !candidates_ctx.is_empty(),
@@ -647,14 +657,22 @@ pub fn first_module_serial(config: &serde_json::Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Read hostname and role from a JSON file path.
-/// Returns (hostname, role) — both are Option<String>.
-fn read_device_fields(path: &std::path::Path) -> (Option<String>, Option<String>) {
+/// Fields read from a logical device JSON for list-page display.
+#[derive(Default)]
+struct DeviceFields {
+    hostname: Option<String>,
+    role: Option<String>,
+    /// Free-text description (set by switches-poll from LocationDetail).
+    description: Option<String>,
+}
+
+/// Read display fields from a logical device JSON.
+fn read_device_fields(path: &std::path::Path) -> DeviceFields {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(err) => {
             warn!(path = %path.display(), error = %err, "Failed to read device file");
-            return (None, None);
+            return DeviceFields::default();
         }
     };
 
@@ -662,23 +680,23 @@ fn read_device_fields(path: &std::path::Path) -> (Option<String>, Option<String>
         Ok(v) => v,
         Err(err) => {
             warn!(path = %path.display(), error = %err, "Failed to parse device JSON");
-            return (None, None);
+            return DeviceFields::default();
         }
     };
 
-    // hostname: top-level "hostname" key, or inside "vars"
-    let hostname = val
-        .get("hostname")
-        .or_else(|| val.get("vars").and_then(|v| v.get("hostname")))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let role = val
-        .get("role")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    (hostname, role)
+    DeviceFields {
+        // hostname: top-level "hostname" key, or inside "vars"
+        hostname: val
+            .get("hostname")
+            .or_else(|| val.get("vars").and_then(|v| v.get("hostname")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        role: val.get("role").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        description: val
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+    }
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────

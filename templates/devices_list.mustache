@@ -2,10 +2,10 @@
 {{> quicksearch}}
 <div class="table-scroll">
 <table id="{{quicksearch_table_id}}">
-<thead><tr><th>Name</th><th>Hostname</th><th>Role</th></tr></thead>
+<thead><tr><th>Name</th><th>Hostname</th><th>Role</th><th>Description</th></tr></thead>
 <tbody>
 {{#rows}}
-<tr><td><a href="/devices/{{name}}">{{name}}</a></td><td>{{hostname}}</td><td>{{role}}</td></tr>
+<tr><td><a href="/devices/{{name}}">{{name}}</a></td><td>{{hostname}}</td><td>{{role}}</td><td>{{description}}</td></tr>
 {{/rows}}
 </tbody>
 </table>

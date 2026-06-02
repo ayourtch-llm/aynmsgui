@@ -6,6 +6,7 @@
 </form></td></tr>
 <tr><th>Hostname</th><td>{{hostname}}</td></tr>
 <tr><th>Role</th><td>{{role}}</td></tr>
+<tr><th>Description</th><td>{{description}}</td></tr>
 <tr><th>Serial</th><td>{{serial}}{{#has_serial}} <form method="POST" action="/devices/{{name}}/unassign-serial" style="display:inline">
 <button type="submit" onclick="return confirm('Remove serial from this device?')">Unassign Serial</button>
 </form>{{/has_serial}}{{^has_serial}}{{#has_candidates}} <form method="POST" action="/devices/{{name}}/assign-serial" style="display:inline">

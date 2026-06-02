@@ -174,7 +174,7 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
                     (true, format!("Last seen {} (older than freshness window)", ts.to_rfc3339()))
                 }
                 (Some(_), None) => (true, "No last-seen timestamp on this device".to_string()),
-                _ => (false, format!("SSH to this device and commit its current config")),
+                _ => (false, String::new()),
             },
         };
 

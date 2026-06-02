@@ -7,6 +7,7 @@ pub mod jumphost_connector;
 mod routes;
 mod sse;
 mod state;
+mod switches_poll;
 
 use std::path::Path;
 use clap::Parser;
@@ -219,6 +220,16 @@ async fn main() {
             cfg.cdp_sweep_cookie.clone().unwrap_or_default(),
             cfg.cdp_sweep_interval_secs,
             cfg.cdp_sweep_insecure,
+        );
+    }
+
+    // Optional switches-list poller: enabled when --switches-url is set.
+    if let Some(url) = cfg.switches_url.clone() {
+        switches_poll::spawn(
+            state.clone(),
+            url,
+            cfg.switches_interval_secs,
+            cfg.switches_insecure,
         );
     }
 

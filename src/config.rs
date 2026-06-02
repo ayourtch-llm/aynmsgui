@@ -125,6 +125,19 @@ pub struct AppConfig {
     /// (useful for self-signed certs on IP-addressed appliances)
     #[arg(long, default_value_t = false, env = "AYNMSGUI_CDP_SWEEP_INSECURE")]
     pub cdp_sweep_insecure: bool,
+
+    /// URL for the switches-list JSON (enables the switches poller when set).
+    /// Endpoint must return a JSON array of { Hostname, IPAddress, Reachable, ... }.
+    #[arg(long, env = "AYNMSGUI_SWITCHES_URL")]
+    pub switches_url: Option<String>,
+
+    /// Interval in seconds between switches-list polls
+    #[arg(long, default_value_t = 60, env = "AYNMSGUI_SWITCHES_INTERVAL_SECS")]
+    pub switches_interval_secs: u64,
+
+    /// Skip TLS certificate verification for switches-list endpoint
+    #[arg(long, default_value_t = false, env = "AYNMSGUI_SWITCHES_INSECURE")]
+    pub switches_insecure: bool,
 }
 
 #[cfg(test)]

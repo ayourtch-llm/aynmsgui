@@ -373,6 +373,17 @@
           width: 3,
         },
       },
+      // Search dimming: applied to anything that doesn't match the
+      // current /find/ query. Keeps matched devices full-color so they
+      // stand out against the faded rest of the graph.
+      {
+        selector: "node.dim",
+        style: { opacity: 0.2 },
+      },
+      {
+        selector: "edge.dim",
+        style: { opacity: 0.12 },
+      },
       // Stale = present in earlier polls, missing from the latest one.
       // Render very pale so they fade into the background without being
       // removed outright — useful for spotting devices that just dropped.
@@ -846,6 +857,43 @@
     }
   }
 
+  // Apply the search-box filter: dim any device (+ its ports + its edges)
+  // whose id/label/description doesn't contain the query (case-insensitive,
+  // case-sensitive if the query has any uppercase). Edges stay full-color
+  // when at least one of their endpoints matches.
+  function applySearch() {
+    if (!cy) return;
+    var inputEl = document.getElementById("topology-search");
+    if (!inputEl) return;
+    var raw = inputEl.value;
+    var q = raw.trim();
+    cy.elements().removeClass("dim");
+    if (q === "") return;
+    var caseSensitive = q.toLowerCase() !== q;
+    var needle = caseSensitive ? q : q.toLowerCase();
+
+    var matched = new Set();
+    cy.nodes(".device").forEach(function (d) {
+      var data = d.data();
+      var hay = [data.id, data.label, data.description, data.role, data.ip, data.platform]
+        .filter(function (s) { return s; })
+        .join("  ");
+      if (!caseSensitive) hay = hay.toLowerCase();
+      if (hay.indexOf(needle) !== -1) matched.add(data.id);
+    });
+
+    cy.nodes(".device").forEach(function (d) {
+      if (matched.has(d.id())) return;
+      d.addClass("dim");
+      d.children().addClass("dim");
+    });
+    cy.edges().forEach(function (e) {
+      var sParent = e.source().isChild() ? e.source().parent().first().id() : e.source().id();
+      var tParent = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
+      if (!matched.has(sParent) && !matched.has(tParent)) e.addClass("dim");
+    });
+  }
+
   // Highlight the relevant siblings of `el`:
   //   port  → its connected edges + the peer port(s) at the other end
   //   edge  → the source + target ports + the edge itself
@@ -923,6 +971,8 @@
     status.textContent =
       visibleDevices + "/" + lastData.node_count + " devices · " +
       visibleEdges + "/" + lastData.edge_count + " adjacencies · CDP sweep: " + when;
+    // Reapply the search dim in case new elements arrived.
+    applySearch();
   }
 
   function load() {
@@ -1059,6 +1109,8 @@
         vd + "/" + newData.node_count + " devices · " +
         ve + "/" + newData.edge_count + " adjacencies · CDP sweep: " + when;
     }
+    // Reapply the search dim in case new elements arrived.
+    applySearch();
   }
 
   function autoLoad() {
@@ -1104,6 +1156,7 @@
       if (autoToggle.checked) startAutoRefresh();
       else stopAutoRefresh();
     });
+    document.getElementById("topology-search").addEventListener("input", applySearch);
     load();
     if (autoToggle.checked) startAutoRefresh();
   };

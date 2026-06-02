@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::state::AppState;
@@ -16,6 +16,18 @@ use crate::state::AppState;
 #[derive(Deserialize)]
 struct AssignForm {
     serial: String,
+}
+
+#[derive(Serialize)]
+struct AssignmentRow {
+    serial: String,
+    device: String,
+}
+
+#[derive(Serialize)]
+struct AssignmentsCtx {
+    rows: Vec<AssignmentRow>,
+    empty: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -36,44 +48,26 @@ pub fn routes() -> Router<AppState> {
 async fn list_assignments(State(state): State<AppState>) -> Html<String> {
     let guard = state.assignments.read().await;
     let assignments = guard.all_assignments();
-
     info!(count = assignments.len(), "Serving assignments list");
 
-    if assignments.is_empty() {
-        return Html(
-            r#"<!DOCTYPE html>
-<html><body>
-<h1>Assignments</h1>
-<p>No assignments</p>
-</body></html>"#
-                .to_string(),
-        );
-    }
+    let rows: Vec<AssignmentRow> = assignments
+        .iter()
+        .map(|(serial, device)| AssignmentRow {
+            serial: serial.clone(),
+            device: device.clone(),
+        })
+        .collect();
 
-    let mut rows = String::new();
-    for (serial, device) in assignments {
-        rows.push_str(&format!(
-            r#"<tr>
-  <td><a href="/assets/{serial}">{serial}</a></td>
-  <td><a href="/devices/{device}">{device}</a></td>
-</tr>
-"#,
-            serial = html_escape(serial),
-            device = html_escape(device),
-        ));
-    }
+    let ctx = AssignmentsCtx {
+        empty: rows.is_empty(),
+        rows,
+    };
 
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html><body>
-<h1>Assignments</h1>
-<table>
-<thead><tr><th>Serial Number</th><th>Logical Device</th></tr></thead>
-<tbody>
-{rows}</tbody>
-</table>
-</body></html>"#
-    ))
+    let html = state
+        .templates
+        .render_page(&state.templates.assignments, "Assignments", "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,15 +90,16 @@ async fn assign_device(
         }
         Err(msg) => {
             tracing::warn!(error = %msg, serial = %form.serial, device = %name, "Assign conflict");
-            let body = format!(
-                r#"<!DOCTYPE html>
-<html><body>
-<h1>Conflict</h1>
-<p>{}</p>
-</body></html>"#,
-                html_escape(&msg)
-            );
-            (axum::http::StatusCode::CONFLICT, Html(body)).into_response()
+            let html = state
+                .templates
+                .render_message(
+                    "Conflict",
+                    Some(&msg),
+                    None,
+                    Some(("/assignments", "Back to Assignments")),
+                )
+                .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+            (axum::http::StatusCode::CONFLICT, Html(html)).into_response()
         }
     }
 }
@@ -122,14 +117,6 @@ async fn unassign_device(
         tracing::warn!(error = %e, "Failed to save assignments after unassign");
     }
     Redirect::to("/assignments")
-}
-
-/// Minimal HTML escaping for untrusted strings.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 // ---------------------------------------------------------------------------

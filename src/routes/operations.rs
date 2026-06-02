@@ -7,12 +7,32 @@ use axum::{
     routing::get,
     Router,
 };
+use serde::Serialize;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 use tracing::{debug, warn};
 
 use crate::sse::OperationStatus;
 use crate::state::AppState;
+
+#[derive(Serialize)]
+struct OpRow {
+    id: String,
+    op_type: String,
+    device: String,
+    status_style: &'static str,
+    status_text: &'static str,
+    started: String,
+    duration: String,
+    last_message: String,
+    running: bool,
+}
+
+#[derive(Serialize)]
+struct OpsCtx {
+    ops: Vec<OpRow>,
+    empty: bool,
+}
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -21,70 +41,42 @@ pub async fn list_operations(State(state): State<AppState>) -> Response {
     let tracker = state.operations.read().await;
     let ops = tracker.list_operations();
 
-    let rows: String = if ops.is_empty() {
-        "<tr><td colspan=\"6\">No operations</td></tr>".to_string()
-    } else {
-        ops.iter().map(|op| {
-            let status_style = match op.status {
-                OperationStatus::Running => "color: #2980b9; font-weight: bold",
-                OperationStatus::Complete => "color: green",
-                OperationStatus::Error => "color: red",
-            };
-            let status_text = match op.status {
-                OperationStatus::Running => "Running",
-                OperationStatus::Complete => "Complete",
-                OperationStatus::Error => "Error",
+    let now = chrono::Utc::now();
+    let rows: Vec<OpRow> = ops
+        .iter()
+        .map(|op| {
+            let (status_style, status_text) = match op.status {
+                OperationStatus::Running => ("color: #2980b9; font-weight: bold", "Running"),
+                OperationStatus::Complete => ("color: green", "Complete"),
+                OperationStatus::Error => ("color: red", "Error"),
             };
             let duration = match op.finished_at {
-                Some(end) => {
-                    let d = end - op.started_at;
-                    format!("{}s", d.num_seconds())
-                }
-                None => {
-                    let d = chrono::Utc::now() - op.started_at;
-                    format!("{}s...", d.num_seconds())
-                }
+                Some(end) => format!("{}s", (end - op.started_at).num_seconds()),
+                None => format!("{}s...", (now - op.started_at).num_seconds()),
             };
-            let view_link = if op.status == OperationStatus::Running {
-                format!("<a href=\"/operations/{id}\">Watch</a>", id = op.id)
-            } else {
-                String::new()
-            };
-            format!(
-                "<tr>\
-                 <td>{op_type}</td>\
-                 <td>{device}</td>\
-                 <td style=\"{status_style}\">{status_text}</td>\
-                 <td>{started}</td>\
-                 <td>{duration}</td>\
-                 <td>{last_msg}</td>\
-                 <td>{view_link}</td>\
-                 </tr>",
-                op_type = html_escape(&op.op_type),
-                device = html_escape(&op.device),
-                status_style = status_style,
-                status_text = status_text,
-                started = op.started_at.format("%H:%M:%S"),
-                duration = duration,
-                last_msg = html_escape(&op.last_message),
-                view_link = view_link,
-            )
-        }).collect()
+            OpRow {
+                id: op.id.clone(),
+                op_type: op.op_type.clone(),
+                device: op.device.clone(),
+                status_style,
+                status_text,
+                started: op.started_at.format("%H:%M:%S").to_string(),
+                duration,
+                last_message: op.last_message.clone(),
+                running: op.status == OperationStatus::Running,
+            }
+        })
+        .collect();
+
+    let ctx = OpsCtx {
+        empty: rows.is_empty(),
+        ops: rows,
     };
 
-    let content = format!(
-        r#"<h1>Operations</h1>
-<table>
-<thead><tr><th>Type</th><th>Device</th><th>Status</th><th>Started</th><th>Duration</th><th>Last Message</th><th></th></tr></thead>
-<tbody>
-{rows}
-</tbody>
-</table>
-<p><a href="/">Dashboard</a></p>"#,
-        rows = rows,
-    );
-
-    let html = crate::routes::page_html("Operations", "", &content);
+    let html = state
+        .templates
+        .render_page(&state.templates.operations, "Operations", "", &ctx)
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
 }
 

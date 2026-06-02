@@ -1,0 +1,19 @@
+<h1>Operations</h1>
+<table>
+<thead><tr><th>Type</th><th>Device</th><th>Status</th><th>Started</th><th>Duration</th><th>Last Message</th><th></th></tr></thead>
+<tbody>
+{{#empty}}<tr><td colspan="6">No operations</td></tr>{{/empty}}
+{{#ops}}
+<tr>
+  <td>{{op_type}}</td>
+  <td>{{device}}</td>
+  <td style="{{status_style}}">{{status_text}}</td>
+  <td>{{started}}</td>
+  <td>{{duration}}</td>
+  <td>{{last_message}}</td>
+  <td>{{#running}}<a href="/operations/{{id}}">Watch</a>{{/running}}</td>
+</tr>
+{{/ops}}
+</tbody>
+</table>
+<p><a href="/">Dashboard</a></p>

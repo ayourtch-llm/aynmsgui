@@ -1,0 +1,15 @@
+<h1>Assignments</h1>
+{{#empty}}<p>No assignments</p>{{/empty}}
+{{^empty}}
+<table>
+<thead><tr><th>Serial Number</th><th>Logical Device</th></tr></thead>
+<tbody>
+{{#rows}}
+<tr>
+  <td><a href="/assets/{{serial}}">{{serial}}</a></td>
+  <td><a href="/devices/{{device}}">{{device}}</a></td>
+</tr>
+{{/rows}}
+</tbody>
+</table>
+{{/empty}}

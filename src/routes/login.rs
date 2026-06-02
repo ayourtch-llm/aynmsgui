@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::state::AppState;
@@ -16,39 +16,22 @@ pub struct LoginForm {
     pub password: String,
 }
 
-static LOGIN_PAGE: &str = r#"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>Login</title></head>
-<body>
-<h1>Login</h1>
-<form method="POST" action="/login">
-  <label>Username: <input type="text" name="username" required></label><br>
-  <label>Password: <input type="password" name="password" required></label><br>
-  <button type="submit">Login</button>
-</form>
-</body>
-</html>"#;
-
-fn login_page_with_error(error: &str) -> String {
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>Login</title></head>
-<body>
-<h1>Login</h1>
-<p style="color:red">{error}</p>
-<form method="POST" action="/login">
-  <label>Username: <input type="text" name="username" required></label><br>
-  <label>Password: <input type="password" name="password" required></label><br>
-  <button type="submit">Login</button>
-</form>
-</body>
-</html>"#
-    )
+#[derive(Serialize, Default)]
+struct LoginCtx<'a> {
+    /// Optional error message. Empty/None renders no banner.
+    error: Option<&'a str>,
 }
 
-pub async fn login_page() -> Html<&'static str> {
-    Html(LOGIN_PAGE)
+fn render_login(state: &AppState, error: Option<&str>) -> Html<String> {
+    let html = state
+        .templates
+        .render_standalone(&state.templates.login, &LoginCtx { error })
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html)
+}
+
+pub async fn login_page(State(state): State<AppState>) -> Html<String> {
+    render_login(&state, None)
 }
 
 pub async fn login_submit(
@@ -73,8 +56,7 @@ pub async fn login_submit(
             .unwrap()
     } else {
         warn!(username = %form.username, "Login failed");
-        let html = login_page_with_error("Invalid username or password");
-        (StatusCode::OK, Html(html)).into_response()
+        (StatusCode::OK, render_login(&state, Some("Invalid username or password"))).into_response()
     }
 }
 

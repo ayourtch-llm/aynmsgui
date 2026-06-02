@@ -1,0 +1,13 @@
+<div class="quicksearch">
+Find:
+<input type="text" size="20" autocomplete="off" id="quickSearch1" autocorrect="off" autocapitalize="off">
+&amp;
+<input type="text" size="20" autocomplete="off" id="quickSearch2" autocorrect="off" autocapitalize="off">
+&amp;
+<input type="text" size="20" autocomplete="off" id="quickSearch3" autocorrect="off" autocapitalize="off">
+&amp;
+<input type="text" size="20" autocomplete="off" id="quickSearch4" autocorrect="off" autocapitalize="off">
+<span id="totalMatches"></span>
+</div>
+<script src="/static/js/quicksearch.js"></script>
+<script>window.addEventListener("load", function () { initQuickSearch("{{quicksearch_table_id}}"); });</script>

@@ -272,6 +272,21 @@ details summary { cursor: pointer; font-weight: 600; color: #1a5276; }
 /* SSE PROGRESS */
 #progress p { margin: 4px 0; }
 
+/* QUICKSEARCH */
+.quicksearch {
+    margin: 0.5em 0 1em 0;
+    padding: 0.5em 0.75em;
+    background: #ffffff;
+    border: 1px solid #d9d9d9;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.quicksearch input { padding: 3px 6px; margin: 0; }
+.quicksearch #totalMatches { margin-left: auto; color: #666; font-size: 0.9em; }
+
 /* RESPONSIVE */
 @media (max-width: 960px) {
     h1 { font-size: 1.1em; }

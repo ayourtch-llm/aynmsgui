@@ -1,10 +1,13 @@
 //! Compiled-template registry for HTML rendering.
 //!
 //! Templates live under `templates/` (relative to cwd) and are compiled once
-//! at startup. The `base.html.mustache` layout takes `{title, user_display,
-//! content_html}` and embeds the page-specific body via `{{{content_html}}}`
-//! (raw / unescaped — pages are responsible for their own escaping, which
-//! mustache does for them by default).
+//! at startup. `base.mustache` is the site-wide layout (`{title, user_display,
+//! content_html}`); per-page templates render their body which is then embedded
+//! via `{{{content_html}}}` (raw — pages auto-escape their own `{{var}}`
+//! interpolations).
+//!
+//! Templates can include partials via `{{> name}}`, which resolves to
+//! `name.mustache` in the same directory.
 
 use std::path::{Path, PathBuf};
 
@@ -41,32 +44,35 @@ pub struct Templates {
 
 impl Templates {
     /// Load and compile all templates from the given directory.
+    /// Uses `mustache::compile_path` so `{{> name}}` partials resolve from
+    /// the same directory (looking for `name.mustache`).
     pub fn load(dir: &Path) -> anyhow::Result<Self> {
         info!(dir = %dir.display(), "Loading mustache templates");
+        let load = |name: &str| compile(&dir.join(format!("{name}.mustache")));
         Ok(Self {
-            base: compile(&dir.join("base.html.mustache"))?,
-            dashboard: compile(&dir.join("dashboard.html.mustache"))?,
-            login: compile(&dir.join("login.html.mustache"))?,
-            operations: compile(&dir.join("operations.html.mustache"))?,
-            settings_credentials: compile(&dir.join("settings_credentials.html.mustache"))?,
-            assignments: compile(&dir.join("assignments.html.mustache"))?,
-            diff_overview: compile(&dir.join("diff_overview.html.mustache"))?,
-            diff_detail: compile(&dir.join("diff_detail.html.mustache"))?,
-            import_form: compile(&dir.join("import_form.html.mustache"))?,
-            import_result: compile(&dir.join("import_result.html.mustache"))?,
-            extract_form: compile(&dir.join("extract_form.html.mustache"))?,
-            extract_sw_form: compile(&dir.join("extract_sw_form.html.mustache"))?,
-            software: compile(&dir.join("software.html.mustache"))?,
-            upgrade_started: compile(&dir.join("upgrade_started.html.mustache"))?,
-            retrieve_form: compile(&dir.join("retrieve_form.html.mustache"))?,
-            retrieve_result: compile(&dir.join("retrieve_result.html.mustache"))?,
-            apply_confirm: compile(&dir.join("apply_confirm.html.mustache"))?,
-            apply_result: compile(&dir.join("apply_result.html.mustache"))?,
-            assets_list: compile(&dir.join("assets_list.html.mustache"))?,
-            asset_detail: compile(&dir.join("asset_detail.html.mustache"))?,
-            devices_list: compile(&dir.join("devices_list.html.mustache"))?,
-            device_detail: compile(&dir.join("device_detail.html.mustache"))?,
-            message: compile(&dir.join("message.html.mustache"))?,
+            base: load("base")?,
+            dashboard: load("dashboard")?,
+            login: load("login")?,
+            operations: load("operations")?,
+            settings_credentials: load("settings_credentials")?,
+            assignments: load("assignments")?,
+            diff_overview: load("diff_overview")?,
+            diff_detail: load("diff_detail")?,
+            import_form: load("import_form")?,
+            import_result: load("import_result")?,
+            extract_form: load("extract_form")?,
+            extract_sw_form: load("extract_sw_form")?,
+            software: load("software")?,
+            upgrade_started: load("upgrade_started")?,
+            retrieve_form: load("retrieve_form")?,
+            retrieve_result: load("retrieve_result")?,
+            apply_confirm: load("apply_confirm")?,
+            apply_result: load("apply_result")?,
+            assets_list: load("assets_list")?,
+            asset_detail: load("asset_detail")?,
+            devices_list: load("devices_list")?,
+            device_detail: load("device_detail")?,
+            message: load("message")?,
         })
     }
 
@@ -74,7 +80,7 @@ impl Templates {
     /// falling back to `$CARGO_MANIFEST_DIR/templates` for tests).
     pub fn load_default() -> anyhow::Result<Self> {
         let cwd_path = PathBuf::from("templates");
-        if cwd_path.join("base.html.mustache").exists() {
+        if cwd_path.join("base.mustache").exists() {
             return Self::load(&cwd_path);
         }
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates");
@@ -159,9 +165,10 @@ impl Templates {
     }
 }
 
+/// Compile a template from a path. Uses `mustache::compile_path` so that
+/// partial references (`{{> name}}`) resolve to `name.mustache` in the
+/// same directory.
 fn compile(path: &Path) -> anyhow::Result<mustache::Template> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading template {}", path.display()))?;
-    mustache::compile_str(&content)
+    mustache::compile_path(path)
         .map_err(|e| anyhow::anyhow!("compiling template {}: {e:?}", path.display()))
 }

@@ -1,15 +1,33 @@
 <h1>Retrieve Current Configs</h1>
-<p>SSH into all seen assets and commit their running configs to the current-configs repo.</p>
+<p>SSH into the selected assets and commit their running configs to the current-configs repo.</p>
 <form method="POST" action="/retrieve">
-  <button type="submit">Retrieve Current Configs</button>
-</form>
 <h2>Seen Assets ({{device_count}})</h2>
+<p>
+  <a href="#" id="retrieve-select-all">Select all</a> ·
+  <a href="#" id="retrieve-select-none">Select none</a>
+</p>
 <table>
-<thead><tr><th>Serial</th><th>Hostname</th><th>IPv4</th><th>IPv6</th></tr></thead>
+<thead><tr><th></th><th>Serial</th><th>Hostname</th><th>IPv4</th><th>IPv6</th></tr></thead>
 <tbody>
 {{#devices}}
-<tr><td>{{serial}}</td><td>{{hostname}}</td><td>{{ipv4}}</td><td>{{ipv6}}</td></tr>
+<tr>
+  <td><input type="checkbox" name="select_{{serial}}" value="on" class="retrieve-row-check"></td>
+  <td>{{serial}}</td><td>{{hostname}}</td><td>{{ipv4}}</td><td>{{ipv6}}</td>
+</tr>
 {{/devices}}
 </tbody>
 </table>
+<p><button type="submit">Retrieve from selected</button></p>
+</form>
 <p><a href="/">Back to Dashboard</a></p>
+<script>
+(function () {
+  var setAll = function (checked) {
+    document.querySelectorAll(".retrieve-row-check").forEach(function (cb) { cb.checked = checked; });
+  };
+  var sa = document.getElementById("retrieve-select-all");
+  var sn = document.getElementById("retrieve-select-none");
+  if (sa) sa.addEventListener("click", function (e) { e.preventDefault(); setAll(true); });
+  if (sn) sn.addEventListener("click", function (e) { e.preventDefault(); setAll(false); });
+})();
+</script>

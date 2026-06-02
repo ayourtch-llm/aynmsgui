@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Form, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -7,6 +7,7 @@ use axum::{
 };
 use indexmap::IndexMap;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -102,7 +103,25 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
 
 pub async fn retrieve_configs(
     State(state): State<AppState>,
+    Form(form): Form<HashMap<String, String>>,
 ) -> Response {
+    // Checkboxes are named `select_<serial>`; we keep only the serials whose
+    // box was checked. Unchecked boxes don't appear in the form payload at
+    // all (HTML form semantics), so presence == checked.
+    let selected: HashSet<String> = form
+        .keys()
+        .filter_map(|k| k.strip_prefix("select_").map(|s| s.to_string()))
+        .collect();
+    if selected.is_empty() {
+        return message_response(
+            &state,
+            "No devices selected",
+            "Pick one or more devices from the list before retrieving.",
+            Some(("/retrieve", "Back")),
+        )
+        .into_response();
+    }
+
     let creds = state.get_device_credentials().await;
 
     // 1. Check current_configs_path is configured and exists
@@ -165,10 +184,12 @@ pub async fn retrieve_configs(
         }
     };
 
-    // 5. Convert seen assets to aycfgapply::devices::Device
+    // 5. Convert seen assets to aycfgapply::devices::Device, filtering to
+    //    only the serials the operator checked on the form.
     let seen = state.seen_assets.read().await;
     let device_map: IndexMap<String, aycfgapply::devices::Device> = seen
         .iter()
+        .filter(|(serial, _)| selected.contains(*serial))
         .map(|(serial, d)| {
             let aycfg_device = aycfgapply::devices::Device {
                 serial: d.serial.clone(),
@@ -181,6 +202,16 @@ pub async fn retrieve_configs(
         })
         .collect();
     drop(seen);
+
+    if device_map.is_empty() {
+        return message_response(
+            &state,
+            "No matching devices",
+            "None of the selected serials are present in the current seen-assets list.",
+            Some(("/retrieve", "Back")),
+        )
+        .into_response();
+    }
 
     info!(
         device_count = device_map.len(),
@@ -312,11 +343,31 @@ mod tests {
         );
     }
 
-    // ── Test 2: POST when current_configs_path doesn't exist returns 503 ──────
+    // ── Test 2: POST with no selection returns a friendly message ──────────────
+
+    #[tokio::test]
+    async fn test_retrieve_no_selection_returns_message() {
+        let app = build_test_app();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/retrieve")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            body.contains("No devices selected"),
+            "expected 'No devices selected' message, got: {body}"
+        );
+    }
+
+    // ── Test 3: POST with a selection but bad path returns 503 ────────────────
 
     #[tokio::test]
     async fn test_retrieve_not_configured() {
-        // Build a config that points current_configs_path to a nonexistent path
         let config = AppConfig::try_parse_from([
             "aynmsgui",
             "--htpasswd-file",
@@ -326,15 +377,58 @@ mod tests {
         ])
         .expect("test config parse");
 
-        let state = AppState::new(config, make_test_htpasswd(), None, IndexMap::new());
+        // Seed seen_assets with one device so the selection matches a real entry.
+        let mut seen = IndexMap::new();
+        seen.insert(
+            "SERIAL1".to_string(),
+            aycallhome::Device {
+                serial: "SERIAL1".to_string(),
+                version: None,
+                hostname: Some("host1".to_string()),
+                model: None,
+                token: None,
+                last_ipv4: Some("10.0.0.1".to_string()),
+                last_ipv6: None,
+                last_seen_ipv4: None,
+                last_seen_ipv6: None,
+                first_seen: None,
+            },
+        );
+
+        let state = AppState::new(config, make_test_htpasswd(), None, seen);
         let app = routes().with_state(state);
 
         let req = Request::builder()
             .method(Method::POST)
             .uri("/retrieve")
-            .body(Body::empty())
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("select_SERIAL1=on"))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
+        // After the form check passes, the path-not-dir check is skipped
+        // (path doesn't exist), but ensure_git_repo will try to create it
+        // and fail under sandboxing → SERVICE_UNAVAILABLE.
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ── Test 4: POST with a selection that matches no seen asset is rejected ──
+
+    #[tokio::test]
+    async fn test_retrieve_unknown_selection_returns_message() {
+        let app = build_test_app(); // empty seen_assets
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/retrieve")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("select_GHOST=on"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(
+            body.contains("No matching devices"),
+            "expected 'No matching devices' message, got: {body}"
+        );
     }
 }

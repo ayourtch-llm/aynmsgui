@@ -65,21 +65,58 @@
     } catch (e) {}
   }
 
-  function loadCachedData() {
+  // The "shadow store" accumulates every node/edge id we've ever seen
+  // (keyed by id, latest data wins). On every successful fetch the new
+  // items are merged in — they're never removed. On page reload we
+  // restore the full shadow with everything marked stale, so devices
+  // that have gone away keep their gray placeholder until either the
+  // backend reports them again or the user clears the history.
+  //
+  // Stored shape: { nodes: { id: nodeData, ... }, edges: { id: edgeData, ... } }
+
+  function readShadow() {
     try {
       var raw = localStorage.getItem(DATA_KEY);
-      return raw ? JSON.parse(raw) : null;
+      var s = raw ? JSON.parse(raw) : { nodes: {}, edges: {} };
+      if (!s.nodes) s.nodes = {};
+      if (!s.edges) s.edges = {};
+      return s;
     } catch (e) {
-      return null;
+      return { nodes: {}, edges: {} };
     }
   }
 
-  function saveCachedData(data) {
+  function updateShadow(data) {
     try {
-      localStorage.setItem(DATA_KEY, JSON.stringify(data));
+      var s = readShadow();
+      (data.nodes || []).forEach(function (n) { s.nodes[n.id] = n; });
+      (data.edges || []).forEach(function (e) { s.edges[e.id] = e; });
+      localStorage.setItem(DATA_KEY, JSON.stringify(s));
     } catch (e) {
-      console.warn("topology: failed to cache data", e);
+      console.warn("topology: failed to update shadow", e);
     }
+  }
+
+  function clearShadow() {
+    try { localStorage.removeItem(DATA_KEY); } catch (e) {}
+  }
+
+  // Reconstruct a /topology/json-shape object from the accumulated shadow.
+  // The merge path then treats it just like a fresh server response —
+  // every item gets a .stale class on initial render, fresh fetches
+  // un-stale items they cover.
+  function shadowAsData() {
+    var s = readShadow();
+    var nodes = Object.keys(s.nodes).map(function (k) { return s.nodes[k]; });
+    var edges = Object.keys(s.edges).map(function (k) { return s.edges[k]; });
+    if (!nodes.length && !edges.length) return null;
+    return {
+      nodes: nodes,
+      edges: edges,
+      node_count: nodes.length,
+      edge_count: edges.length,
+      fetched_at: null,
+    };
   }
 
   // Apply saved positions to nodes that have them. Returns true if EVERY
@@ -1002,7 +1039,7 @@
     fetch("/topology/json")
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        saveCachedData(data);
+        updateShadow(data);
         if (cy && lastData) {
           // We pre-rendered from the cache and marked things stale; now
           // merge the fresh data so seen items lose their stale class.
@@ -1177,7 +1214,7 @@
   function autoLoad() {
     fetch("/topology/json")
       .then(function (r) { return r.json(); })
-      .then(function (data) { saveCachedData(data); mergeUpdate(data); })
+      .then(function (data) { updateShadow(data); mergeUpdate(data); })
       .catch(function (e) { console.warn("topology auto-refresh failed:", e); });
   }
 
@@ -1219,9 +1256,12 @@
     });
     document.getElementById("topology-search").addEventListener("input", applySearch);
 
-    // Render whatever we have cached first, with everything stale; the
-    // first /topology/json fetch will then un-stale the items it sees.
-    var cached = loadCachedData();
+    // Render whatever the shadow contains first, with everything stale;
+    // the first /topology/json fetch will then un-stale the items it sees.
+    // The shadow accumulates every node/edge seen across all polls in the
+    // browser's history, so devices that have dropped out of CDP still
+    // appear (gray) instead of vanishing across a page reload.
+    var cached = shadowAsData();
     if (cached) {
       lastData = cached;
       render();

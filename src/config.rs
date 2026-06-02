@@ -126,6 +126,13 @@ pub struct AppConfig {
     #[arg(long, default_value_t = false, env = "AYNMSGUI_CDP_SWEEP_INSECURE")]
     pub cdp_sweep_insecure: bool,
 
+    /// Allow the CDP sweep poller to update IP addresses on existing
+    /// seen-assets entries and insert new entries for previously-unknown
+    /// CDP neighbors. Off by default — by default the poller only refreshes
+    /// the topology snapshot and leaves seen_assets untouched.
+    #[arg(long, default_value_t = false, env = "AYNMSGUI_CDP_SWEEP_UPDATE_ASSETS")]
+    pub cdp_sweep_update_assets: bool,
+
     /// URL for the switches-list JSON (enables the switches poller when set).
     /// Endpoint must return a JSON array of { Hostname, IPAddress, Reachable, ... }.
     #[arg(long, env = "AYNMSGUI_SWITCHES_URL")]

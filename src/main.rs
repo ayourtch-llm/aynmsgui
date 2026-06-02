@@ -221,6 +221,7 @@ async fn main() {
             cfg.cdp_sweep_cookie.clone().unwrap_or_default(),
             cfg.cdp_sweep_interval_secs,
             cfg.cdp_sweep_insecure,
+            cfg.cdp_sweep_update_assets,
         );
     }
 

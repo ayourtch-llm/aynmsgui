@@ -71,12 +71,15 @@ pub fn canonical_hostname(host: &str) -> &str {
 }
 
 /// Fetch the sweep and merge results into `state.seen_assets`.
-/// Returns (matched_existing, inserted_new) on success.
+/// Returns (matched_existing, inserted_new) on success. If
+/// `update_assets` is false, the topology snapshot is still refreshed
+/// but seen_assets is left untouched (both counts return 0).
 pub async fn poll_once(
     state: &AppState,
     client: &reqwest::Client,
     url: &str,
     cookie: &str,
+    update_assets: bool,
 ) -> anyhow::Result<(usize, usize)> {
     let mut req = client.get(url);
     if !cookie.is_empty() {
@@ -97,6 +100,10 @@ pub async fn poll_once(
         entries: entries.clone(),
         fetched_at: now,
     });
+
+    if !update_assets {
+        return Ok((0, 0));
+    }
 
     let mut matched = 0usize;
     let mut inserted = 0usize;
@@ -186,6 +193,7 @@ pub fn spawn(
     cookie: String,
     interval_secs: u64,
     insecure: bool,
+    update_assets: bool,
 ) {
     if url.is_empty() {
         return;
@@ -202,14 +210,14 @@ pub fn spawn(
         }
     };
 
-    info!(url = %url, interval_secs, insecure, "Starting CDP sweep poller");
+    info!(url = %url, interval_secs, insecure, update_assets, "Starting CDP sweep poller");
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            match poll_once(&state, &client, &url, &cookie).await {
+            match poll_once(&state, &client, &url, &cookie, update_assets).await {
                 Ok((matched, inserted)) => {
                     info!(matched, inserted, "CDP sweep poll complete");
                 }

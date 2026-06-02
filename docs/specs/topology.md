@@ -368,12 +368,17 @@ disappearance re-alarms.
 The background poller in `src/cdp_sweep.rs` reads from environment
 variables wired in `main.rs`:
 
-- `CDP_SWEEP_URL` — endpoint to GET (e.g. the
+- `AYNMSGUI_CDP_SWEEP_URL` — endpoint to GET (e.g. the
   `https://10.x.x.x/virtual/cdp-neighbors-sweep/latest.json` URL).
   Empty → poller disabled.
-- `CDP_SWEEP_COOKIE` — optional `Cookie:` header value for auth.
-- `CDP_SWEEP_INTERVAL_SECS` — poll interval (default 30).
-- `CDP_SWEEP_INSECURE` — accept self-signed certs when truthy.
+- `AYNMSGUI_CDP_SWEEP_COOKIE` — optional `Cookie:` header value for auth.
+- `AYNMSGUI_CDP_SWEEP_INTERVAL_SECS` — poll interval (default 60).
+- `AYNMSGUI_CDP_SWEEP_INSECURE` — accept self-signed certs when truthy.
+- `AYNMSGUI_CDP_SWEEP_UPDATE_ASSETS` — when truthy, the poller refreshes
+  IPs on existing `seen_assets` entries (matched by canonical hostname)
+  and inserts new entries for previously-unknown CDP neighbors. **Off
+  by default** — the topology snapshot is refreshed regardless, only
+  the cross-write into seen_assets is gated.
 
 The `switches_poll.rs` poller similarly reads `SWITCHES_POLL_URL`
 (public endpoint) and updates the `description` field of logical

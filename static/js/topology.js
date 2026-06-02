@@ -1340,40 +1340,20 @@
     // wider than the start. Clamp to a sane floor too.
     fitZoom = Math.max(0.1, Math.min(fitZoom, currentZoom * 0.95));
 
-    // Three-phase flight with NO stop at the apex:
-    //   P1 (ease-out, fast):     accelerate up to apex
-    //   P2 (linear, slow):       drift past the apex toward the target —
-    //                            keeps motion alive so the camera never
-    //                            comes to rest
-    //   P3 (ease-in, fast):      dive in on the target
-    // P2's target state is just past the apex, interpolated 20% of the way
-    // toward the final view — small enough that the eye still tracks the
-    // destination but enough motion that there's no pause.
+    // Two-phase flight, chained immediately (no pause, no slow drift):
+    // linear easing keeps the camera moving at constant speed across both
+    // phases so there's no decelerate-then-accelerate hitch at the apex.
     var apexPan = { x: cy.width() / 2 - bbCx * fitZoom,
                     y: cy.height() / 2 - bbCy * fitZoom };
-    var finalPan = panToTarget(inZoom);
-    var driftT = 0.20;
-    var driftZoom = fitZoom + (inZoom - fitZoom) * driftT;
-    var driftPan = { x: apexPan.x + (finalPan.x - apexPan.x) * driftT,
-                     y: apexPan.y + (finalPan.y - apexPan.y) * driftT };
     cy.animate(
       { zoom: fitZoom, pan: apexPan },
       {
         duration: 400,
-        easing: "ease-out",
+        easing: "linear",
         complete: function () {
           cy.animate(
-            { zoom: driftZoom, pan: driftPan },
-            {
-              duration: 350,
-              easing: "linear",
-              complete: function () {
-                cy.animate(
-                  { zoom: inZoom, pan: finalPan },
-                  { duration: 500, easing: "ease-in" }
-                );
-              },
-            }
+            { zoom: inZoom, pan: panToTarget(inZoom) },
+            { duration: 450, easing: "linear" }
           );
         },
       }

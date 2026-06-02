@@ -1,6 +1,8 @@
 <h1>Config Diff Overview</h1>
-<table>
-<tr><th>Serial</th><th>Logical Device</th><th>Status</th><th>Preview</th><th>Action</th></tr>
+{{> quicksearch}}
+<table id="{{quicksearch_table_id}}">
+<thead><tr><th>Serial</th><th>Logical Device</th><th>Status</th><th>Preview</th><th>Action</th></tr></thead>
+<tbody>
 {{#items}}
 <tr class="{{status_class}}">
   <td><a href="/diff/{{name}}">{{name}}</a></td>
@@ -10,4 +12,5 @@
   <td>{{#has_diff}}<a href="/apply/{{name}}">Apply</a>{{/has_diff}}</td>
 </tr>
 {{/items}}
+</tbody>
 </table>

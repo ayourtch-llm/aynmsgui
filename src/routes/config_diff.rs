@@ -26,6 +26,7 @@ pub struct DiffOverviewItem {
 #[derive(Serialize)]
 struct DiffOverviewCtx {
     items: Vec<DiffOverviewItem>,
+    quicksearch_table_id: &'static str,
 }
 
 #[derive(Serialize)]
@@ -167,7 +168,10 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             &state.templates.diff_overview,
             "Config Diff Overview",
             "",
-            &DiffOverviewCtx { items },
+            &DiffOverviewCtx {
+                items,
+                quicksearch_table_id: "diff-table",
+            },
         )
         .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
 

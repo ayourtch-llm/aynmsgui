@@ -242,51 +242,33 @@
         },
       },
       // ── Edges ────────────────────────────────────────────────────────
-      // Cytoscape's mid-source-arrow / mid-target-arrow both render at
-      // the midpoint pointing inward at each other, which we don't want.
-      // Use Unicode triangle CHARACTERS as text labels instead — their
-      // position is set via *-text-offset and they rotate with the edge
-      // via *-text-rotation: autorotate. ▶ autorotates so its tip
-      // follows the source→target direction (points toward target); ◀
-      // autorotates so its tip points toward source.
-      //
-      // Line goes all the way to the port box; arrows float in the
-      // central area, offset along the line so two arrows don't overlap.
+      // Single line per port pair, with Cytoscape's built-in triangle
+      // markers in the middle of the line. For unidirectional, one
+      // mid-target-arrow. For bidirectional, also mid-source-arrow —
+      // the two render facing each other (>< look) at the midpoint.
+      // The text-label approach gave nicer outward-pointing geometry but
+      // the glyphs were inconsistent with Cytoscape's other arrowheads;
+      // mid-arrows are uglier but visually uniform with everything else.
       {
         selector: "edge",
         style: {
           width: 1,
           "line-color": "#666",
           "curve-style": "bezier",
+          "mid-target-arrow-shape": "triangle",
+          "mid-target-arrow-color": "#666",
+          "arrow-scale": 1.4,
           "source-endpoint": "outside-to-line",
           "target-endpoint": "outside-to-line",
           "source-distance-from-node": 1,
           "target-distance-from-node": 1,
-          // Single arrow for unidirectional edges: ▶ near the target end,
-          // pointing toward target. text-margin-y nudges the glyph down
-          // onto the line — triangle characters sit on the baseline with
-          // the visible shape above it, so without the offset they end
-          // up "floating" above the autorotated edge.
-          "target-label": "▶",
-          "target-text-offset": 30,
-          "target-text-rotation": "autorotate",
-          "target-text-margin-y": 5,
-          "color": "#666",
-          "font-size": 14,
-          "font-family": "sans-serif",
         },
       },
-      // Mutual adjacency: ALSO a ◀ arrow near the source end, pointing
-      // toward source. With both labels, the line carries two arrows
-      // offset along it (one in the source half, one in the target half),
-      // both pointing outward at their respective ports.
       {
         selector: "edge.bidirectional",
         style: {
-          "source-label": "◀",
-          "source-text-offset": 30,
-          "source-text-rotation": "autorotate",
-          "source-text-margin-y": 5,
+          "mid-source-arrow-shape": "triangle",
+          "mid-source-arrow-color": "#666",
         },
       },
       {
@@ -308,13 +290,14 @@
           "background-color": "#eaf3fb",
         },
       },
-      // Highlight: thicker blue line + matching blue text color (which
-      // colors both source-label and target-label arrow characters).
+      // Highlight: thicker blue line + matching blue mid-arrows on both
+      // sides (mid-source-arrow-color covers the bidirectional case).
       {
         selector: "edge.highlighted",
         style: {
           "line-color": "#2980b9",
-          "color": "#2980b9",
+          "mid-target-arrow-color": "#2980b9",
+          "mid-source-arrow-color": "#2980b9",
           width: 3,
         },
       },

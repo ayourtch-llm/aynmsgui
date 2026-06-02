@@ -53,6 +53,9 @@ regex = "1"
 # Indexmap for ordered maps
 indexmap = { version = "2", features = ["serde"] }
 
+# HTTP client (for CDP sweep poller)
+reqwest = { version = "0.12", features = ["json"] }
+
 # ay* crate dependencies
 aycallhome = { path = "../aycallhome" }
 ayciam = { path = "../ayciam" }

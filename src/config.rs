@@ -107,6 +107,24 @@ pub struct AppConfig {
         env = "AYNMSGUI_SEEN_ASSETS_FILE"
     )]
     pub seen_assets_file: PathBuf,
+
+    /// URL for CDP-neighbors sweep JSON (enables the CDP poller when set)
+    #[arg(long, env = "AYNMSGUI_CDP_SWEEP_URL")]
+    pub cdp_sweep_url: Option<String>,
+
+    /// Cookie header value for CDP sweep requests
+    /// (e.g. "rsp10_session_cookie=...")
+    #[arg(long, env = "AYNMSGUI_CDP_SWEEP_COOKIE")]
+    pub cdp_sweep_cookie: Option<String>,
+
+    /// Interval in seconds between CDP sweep polls
+    #[arg(long, default_value_t = 60, env = "AYNMSGUI_CDP_SWEEP_INTERVAL_SECS")]
+    pub cdp_sweep_interval_secs: u64,
+
+    /// Skip TLS certificate verification for CDP sweep endpoint
+    /// (useful for self-signed certs on IP-addressed appliances)
+    #[arg(long, default_value_t = false, env = "AYNMSGUI_CDP_SWEEP_INSECURE")]
+    pub cdp_sweep_insecure: bool,
 }
 
 #[cfg(test)]

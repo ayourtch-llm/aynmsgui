@@ -1,5 +1,6 @@
 mod auth;
 pub mod assignments;
+mod cdp_sweep;
 mod config;
 mod error;
 pub mod jumphost_connector;
@@ -209,6 +210,17 @@ async fn main() {
             refresh_state.refresh_seen_assets().await;
         }
     });
+
+    // Optional CDP-sweep poller: enabled when --cdp-sweep-url is set.
+    if let Some(url) = cfg.cdp_sweep_url.clone() {
+        cdp_sweep::spawn(
+            state.clone(),
+            url,
+            cfg.cdp_sweep_cookie.clone().unwrap_or_default(),
+            cfg.cdp_sweep_interval_secs,
+            cfg.cdp_sweep_insecure,
+        );
+    }
 
     let app = routes::build_router(state);
 

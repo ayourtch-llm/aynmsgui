@@ -84,6 +84,33 @@
     };
   }
 
+  // Pin column widths to whatever the browser laid out for the header row,
+  // then switch the table to `table-layout: fixed` so columns no longer
+  // recompute as rows hide/show during filtering. Without this, every
+  // keystroke can shift column widths (a noticeable shimmy on wide tables).
+  function freezeColumnWidths(table) {
+    var headerRow = null;
+    if (table.tHead && table.tHead.rows.length) {
+      headerRow = table.tHead.rows[0];
+    } else if (table.rows.length) {
+      headerRow = table.rows[0];
+    }
+    if (!headerRow) return;
+
+    var ths = headerRow.cells;
+    // Snapshot first, then apply — measuring after each write would give
+    // distorted values once table-layout flips.
+    var widths = [];
+    for (var i = 0; i < ths.length; i++) {
+      widths.push(ths[i].offsetWidth);
+    }
+    for (var j = 0; j < ths.length; j++) {
+      ths[j].style.boxSizing = "border-box";
+      ths[j].style.width = widths[j] + "px";
+    }
+    table.style.tableLayout = "fixed";
+  }
+
   window.initQuickSearch = function (tableId, opts) {
     opts = opts || {};
     var inputCount = opts.inputCount || 4;
@@ -105,6 +132,10 @@
       console.warn("quicksearch: no inputs found for prefix", idPrefix);
       return;
     }
+
+    // Freeze column widths once, before any user interaction.
+    freezeColumnWidths(table);
+
     var counter = document.getElementById(counterId);
     var handler = makeHandler(table, inputs, counter, headerClass);
     inputs.forEach(function (el) {

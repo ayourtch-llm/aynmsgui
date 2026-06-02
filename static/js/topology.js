@@ -254,6 +254,16 @@
           "background-color": "#eaf3fb",
         },
       },
+      // Thicken the connecting edge(s) of the selected port too — the
+      // line color matches the highlighted ports at each end.
+      {
+        selector: "edge.highlighted",
+        style: {
+          "line-color": "#2980b9",
+          "target-arrow-color": "#2980b9",
+          width: 3,
+        },
+      },
     ];
   }
 
@@ -341,12 +351,13 @@
   }
 
   function highlightPeersOf(node) {
-    // Clear previous peer highlights.
-    cy.nodes(".highlighted").removeClass("highlighted");
+    // Clear previous highlights on both nodes and edges.
+    cy.elements(".highlighted").removeClass("highlighted");
     if (!node.hasClass("port")) return;
     node.connectedEdges().forEach(function (edge) {
       var peer = edge.source().id() === node.id() ? edge.target() : edge.source();
       peer.addClass("highlighted");
+      edge.addClass("highlighted");
     });
   }
 
@@ -369,7 +380,7 @@
       highlightPeersOf(evt.target);
     });
     cy.on("unselect", "node", function () {
-      cy.nodes(".highlighted").removeClass("highlighted");
+      cy.elements(".highlighted").removeClass("highlighted");
     });
     fitAndLayout();
     var when = lastData.fetched_at

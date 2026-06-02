@@ -1,7 +1,7 @@
 <h1 class="list-page-heading">Retrieve Current Configs</h1>
 <p>SSH into the selected assets and commit their running configs to the current-configs repo.</p>
 <form method="POST" action="/retrieve">
-<h2>Seen Assets ({{device_count}})</h2>
+<h2>Recently seen assets — {{max_age_label}} ({{device_count}} of {{total_count}})</h2>
 <p>
   <a href="#" id="retrieve-select-all">Select all</a> ·
   <a href="#" id="retrieve-select-none">Select none</a>

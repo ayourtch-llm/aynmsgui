@@ -108,6 +108,18 @@ pub struct AppConfig {
     )]
     pub seen_assets_file: PathBuf,
 
+    /// Maximum age (in seconds) of a seen-asset last-seen timestamp for the
+    /// device to appear on the /retrieve page. Devices not seen this
+    /// recently are hidden — and the POST handler refuses to retrieve from
+    /// them — to avoid SSH-ing devices that are likely offline. Default
+    /// 1800s (30 min). Set to 0 to disable the filter.
+    #[arg(
+        long,
+        default_value_t = 1800,
+        env = "AYNMSGUI_RETRIEVE_MAX_AGE_SECS"
+    )]
+    pub retrieve_max_age_secs: u64,
+
     /// URL for CDP-neighbors sweep JSON (enables the CDP poller when set)
     #[arg(long, env = "AYNMSGUI_CDP_SWEEP_URL")]
     pub cdp_sweep_url: Option<String>,

@@ -27,6 +27,10 @@ struct SeenDeviceRow {
 struct RetrieveFormCtx {
     devices: Vec<SeenDeviceRow>,
     device_count: usize,
+    /// Total seen_assets before the freshness filter — shown so the operator
+    /// can tell when devices are being hidden because they're stale.
+    total_count: usize,
+    max_age_label: String,
     quicksearch_table_id: &'static str,
 }
 
@@ -73,13 +77,52 @@ fn ensure_git_repo(path: &Path, branch: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ── Freshness filter ──────────────────────────────────────────────────────────
+
+/// Returns the cutoff timestamp: any device whose last_seen is before this
+/// is considered stale and hidden from /retrieve. `None` means the filter
+/// is disabled (max_age_secs == 0).
+fn freshness_cutoff(max_age_secs: u64) -> Option<chrono::DateTime<chrono::Utc>> {
+    if max_age_secs == 0 {
+        return None;
+    }
+    Some(chrono::Utc::now() - chrono::Duration::seconds(max_age_secs as i64))
+}
+
+/// A device is "fresh" if either the filter is disabled (`cutoff is None`)
+/// or its most-recent last_seen timestamp is at or after the cutoff.
+fn is_fresh(
+    d: &aycallhome::Device,
+    cutoff: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    let Some(cutoff) = cutoff else { return true; };
+    match d.last_seen() {
+        Some(ts) => ts >= cutoff,
+        None => false,
+    }
+}
+
+fn format_max_age(max_age_secs: u64) -> String {
+    if max_age_secs == 0 {
+        return "any age".to_string();
+    }
+    if max_age_secs % 60 == 0 {
+        format!("last {} min", max_age_secs / 60)
+    } else {
+        format!("last {} s", max_age_secs)
+    }
+}
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 pub async fn retrieve_page(State(state): State<AppState>) -> Response {
     let devices = state.seen_assets.read().await;
-    let device_count = devices.len();
+    let total_count = devices.len();
+    let max_age_secs = state.config.retrieve_max_age_secs;
+    let cutoff = freshness_cutoff(max_age_secs);
     let rows: Vec<SeenDeviceRow> = devices
         .iter()
+        .filter(|(_, d)| is_fresh(d, cutoff))
         .map(|(serial, d)| SeenDeviceRow {
             serial: serial.clone(),
             hostname: d.hostname.clone().unwrap_or_else(|| "-".to_string()),
@@ -89,9 +132,12 @@ pub async fn retrieve_page(State(state): State<AppState>) -> Response {
         .collect();
     drop(devices);
 
+    let device_count = rows.len();
     let ctx = RetrieveFormCtx {
         devices: rows,
         device_count,
+        total_count,
+        max_age_label: format_max_age(max_age_secs),
         quicksearch_table_id: "retrieveTable",
     };
     let html = state
@@ -190,11 +236,15 @@ pub async fn retrieve_configs(
     };
 
     // 5. Convert seen assets to aycfgapply::devices::Device, filtering to
-    //    only the serials the operator checked on the form.
+    //    only the serials the operator checked AND that are fresh enough.
+    //    The freshness filter is also applied here (not only in the form)
+    //    so a stale POST body — e.g. a tab left open for hours — can't
+    //    sneak past the UI.
+    let cutoff = freshness_cutoff(state.config.retrieve_max_age_secs);
     let seen = state.seen_assets.read().await;
     let device_map: IndexMap<String, aycfgapply::devices::Device> = seen
         .iter()
-        .filter(|(serial, _)| selected.contains(*serial))
+        .filter(|(serial, d)| selected.contains(*serial) && is_fresh(d, cutoff))
         .map(|(serial, d)| {
             let aycfg_device = aycfgapply::devices::Device {
                 serial: d.serial.clone(),
@@ -416,7 +466,60 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // ── Test 4: POST with a selection that matches no seen asset is rejected ──
+    // ── Test 4: GET hides devices last-seen beyond the freshness window ───────
+
+    #[tokio::test]
+    async fn test_retrieve_freshness_filter_hides_stale_devices() {
+        let now = chrono::Utc::now();
+        let mut seen = IndexMap::new();
+        seen.insert(
+            "FRESH".to_string(),
+            aycallhome::Device {
+                serial: "FRESH".to_string(),
+                version: None,
+                hostname: Some("fresh-host".to_string()),
+                model: None,
+                token: None,
+                last_ipv4: Some("10.0.0.1".to_string()),
+                last_ipv6: None,
+                last_seen_ipv4: Some(now), // just seen
+                last_seen_ipv6: None,
+                first_seen: None,
+            },
+        );
+        seen.insert(
+            "STALE".to_string(),
+            aycallhome::Device {
+                serial: "STALE".to_string(),
+                version: None,
+                hostname: Some("stale-host".to_string()),
+                model: None,
+                token: None,
+                last_ipv4: Some("10.0.0.2".to_string()),
+                last_ipv6: None,
+                last_seen_ipv4: Some(now - chrono::Duration::hours(2)), // 2h ago, well past 30min
+                last_seen_ipv6: None,
+                first_seen: None,
+            },
+        );
+        let state = AppState::new(make_test_config(), make_test_htpasswd(), None, seen);
+        let app = routes().with_state(state);
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/retrieve")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("fresh-host"), "FRESH device should be shown");
+        assert!(!body.contains("stale-host"), "STALE device should be hidden");
+        assert!(body.contains("1 of 2"), "header should show filtered count");
+    }
+
+    // ── Test 5: POST with a selection that matches no seen asset is rejected ──
 
     #[tokio::test]
     async fn test_retrieve_unknown_selection_returns_message() {

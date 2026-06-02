@@ -111,17 +111,21 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             }
         };
 
-        let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
-        let has_diff = !delta.trim().is_empty();
-
-        let diff_preview = if has_diff {
-            delta
-                .lines()
-                .take(3)
-                .collect::<Vec<_>>()
-                .join("\n")
+        // Short-circuit identical normalized configs without parsing.
+        // Both sides funnel through aycfgapply's normalize_body, so byte
+        // equality guarantees an empty delta — and skips the expensive
+        // aycicdiff parse + classify for unchanged devices.
+        let (has_diff, diff_preview) = if target_config == current_config {
+            (false, "No changes".to_string())
         } else {
-            "No changes".to_string()
+            let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
+            let has_diff = !delta.trim().is_empty();
+            let preview = if has_diff {
+                delta.lines().take(3).collect::<Vec<_>>().join("\n")
+            } else {
+                "No changes".to_string()
+            };
+            (has_diff, preview)
         };
 
         let device_name = serial_map
@@ -230,7 +234,11 @@ pub async fn diff_detail(
         }
     };
 
-    let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
+    let delta = if target_config == current_config {
+        String::new()
+    } else {
+        aycicdiff::generate_delta(&current_config, &target_config, None)
+    };
 
     // Look up logical device name for this serial
     let device_name = state

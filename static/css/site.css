@@ -204,6 +204,33 @@ tbody tr:hover { background-color: #e3edf7; }
 tr.has-diff td:nth-child(4) { color: #c0392b; font-weight: 600; }
 tr.no-diff td:nth-child(4) { color: #95a5a6; }
 
+/* Diff overview Preview cell: keep the column compact but show enough of
+ * the delta that the operator can tell at a glance what's changing. The
+ * <pre> is height-capped; if the delta is longer the user can scroll the
+ * cell — and the "+N more" footer + add/remove counts give the scale. */
+.diff-preview {
+    max-height: 10em;
+    overflow-y: auto;
+    margin: 0;
+    padding: 4px 6px;
+    font-size: 0.85em;
+    line-height: 1.25em;
+    background: #fafafa;
+    border: 1px solid #e3e3e3;
+    border-radius: 3px;
+}
+.diff-preview .diff-add { color: #1b5e20; }
+.diff-preview .diff-remove { color: #b71c1c; }
+.diff-preview .diff-more {
+    color: #888;
+    font-style: italic;
+}
+.diff-stats {
+    margin-top: 3px;
+    font-size: 0.78em;
+    color: #555;
+}
+
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint
  * signals "this is here for context but you can't act on it." Win over

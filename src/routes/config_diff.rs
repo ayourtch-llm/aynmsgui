@@ -14,6 +14,15 @@ use crate::state::AppState;
 // ── View models ──────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
+pub struct DiffLine {
+    pub text: String,
+    /// True iff the line begins with "no " — Cisco's negation. We tint
+    /// these red and tint everything else green so the eye can scan a
+    /// preview the way it scans a unified diff.
+    pub is_remove: bool,
+}
+
+#[derive(Serialize)]
 pub struct DiffOverviewItem {
     pub name: String,
     pub device_name: String,
@@ -22,7 +31,16 @@ pub struct DiffOverviewItem {
     /// "-" if neither source has anything.
     pub hostname: String,
     pub has_diff: bool,
-    pub diff_preview: String,
+    /// The preview slice of the delta (up to PREVIEW_LINES), classified
+    /// per line. The full delta is on the diff detail page.
+    pub diff_lines: Vec<DiffLine>,
+    /// Number of additional lines that the preview did NOT include.
+    /// Surfaced under the preview as "… +N more lines".
+    pub diff_more: usize,
+    pub has_more: bool,
+    pub diff_total: usize,
+    pub diff_added: usize,
+    pub diff_removed: usize,
     pub status_class: &'static str,
     pub status_text: &'static str,
     /// True if the matching seen_assets entry's last_seen is older than the
@@ -31,6 +49,11 @@ pub struct DiffOverviewItem {
     pub retrieve_disabled: bool,
     pub retrieve_reason: String,
 }
+
+/// How many delta lines to embed in the overview preview before
+/// "… +N more lines" kicks in. Combined with the .diff-preview
+/// max-height in CSS this gives a compact but informative snapshot.
+const PREVIEW_LINES: usize = 10;
 
 #[derive(Serialize)]
 struct DiffOverviewCtx {
@@ -152,18 +175,30 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         // Both sides funnel through aycfgapply's normalize_body, so byte
         // equality guarantees an empty delta — and skips the expensive
         // aycicdiff parse + classify for unchanged devices.
-        let (has_diff, diff_preview) = if target_config == current_config {
-            (false, "No changes".to_string())
-        } else {
-            let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
-            let has_diff = !delta.trim().is_empty();
-            let preview = if has_diff {
-                delta.lines().take(3).collect::<Vec<_>>().join("\n")
+        let (has_diff, diff_lines, diff_more, diff_total, diff_added, diff_removed) =
+            if target_config == current_config {
+                (false, Vec::new(), 0usize, 0usize, 0usize, 0usize)
             } else {
-                "No changes".to_string()
+                let delta = aycicdiff::generate_delta(&current_config, &target_config, None);
+                let all: Vec<&str> = delta.lines().collect();
+                let total = all.len();
+                let removed = all
+                    .iter()
+                    .filter(|l| l.trim_start().starts_with("no "))
+                    .count();
+                let added = total.saturating_sub(removed);
+                let has_diff = !delta.trim().is_empty();
+                let preview_lines: Vec<DiffLine> = all
+                    .iter()
+                    .take(PREVIEW_LINES)
+                    .map(|l| DiffLine {
+                        text: (*l).to_string(),
+                        is_remove: l.trim_start().starts_with("no "),
+                    })
+                    .collect();
+                let more = total.saturating_sub(preview_lines.len());
+                (has_diff, preview_lines, more, total, added, removed)
             };
-            (has_diff, preview)
-        };
 
         let logical_names = serial_map.get(&name);
         let device_name = logical_names
@@ -213,7 +248,12 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             device_name,
             hostname,
             has_diff,
-            diff_preview,
+            diff_lines,
+            diff_more,
+            has_more: diff_more > 0,
+            diff_total,
+            diff_added,
+            diff_removed,
             status_class: if has_diff { "has-diff" } else { "no-diff" },
             status_text: if has_diff { "Changes" } else { "No changes" },
             retrieve_disabled,

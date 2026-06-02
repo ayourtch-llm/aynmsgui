@@ -3,28 +3,35 @@
 //
 //   initColumnResize("my-table-id")
 //
-// Adds a thin "splitter" handle on the right edge of every <th> except the
-// last. Dragging steals pixels from the next column, so the table's overall
-// width stays constant. State is not persisted — widths reset on reload.
+// Adds a "splitter" handle on the right edge of every <th>. Dragging
+// resizes *only* the dragged column — the table grows or shrinks
+// horizontally to match, so other columns stay put. The wrapping
+// container should allow horizontal overflow (e.g. overflow-x: auto on
+// .main) so users can scroll to reach widened columns.
+//
+// State is not persisted — widths reset on reload.
 (function () {
   var MIN_WIDTH = 30;
 
-  function attachDragHandler(handle, th, nextTh) {
+  function attachDragHandler(handle, th, table) {
     handle.addEventListener("mousedown", function (e) {
       e.preventDefault();
       var startX = e.clientX;
       var startWidth = th.offsetWidth;
-      var startNextWidth = nextTh.offsetWidth;
+
+      // Pin the table to its current pixel width so growing one column
+      // grows the total table, instead of the browser redistributing the
+      // delta across other columns to keep width: 100% satisfied.
+      if (!table.style.width || table.style.width.indexOf("px") === -1) {
+        table.style.width = table.offsetWidth + "px";
+      }
+      var startTableWidth = table.offsetWidth;
 
       function onMove(ev) {
         var delta = ev.clientX - startX;
-        // Clamp so both columns stay >= MIN_WIDTH
-        var maxDelta = startNextWidth - MIN_WIDTH;
-        var minDelta = -(startWidth - MIN_WIDTH);
-        if (delta > maxDelta) delta = maxDelta;
-        if (delta < minDelta) delta = minDelta;
+        if (delta < -(startWidth - MIN_WIDTH)) delta = -(startWidth - MIN_WIDTH);
         th.style.width = (startWidth + delta) + "px";
-        nextTh.style.width = (startNextWidth - delta) + "px";
+        table.style.width = (startTableWidth + delta) + "px";
       }
       function onUp() {
         document.removeEventListener("mousemove", onMove);
@@ -53,10 +60,8 @@
     if (!headerRow) return;
 
     var ths = headerRow.cells;
-    // Skip the last column — there's nothing on its right to steal from.
-    for (var i = 0; i < ths.length - 1; i++) {
+    for (var i = 0; i < ths.length; i++) {
       var th = ths[i];
-      var nextTh = ths[i + 1];
       // The handle is absolutely positioned within the th.
       if (getComputedStyle(th).position === "static") {
         th.style.position = "relative";
@@ -64,7 +69,7 @@
       var handle = document.createElement("span");
       handle.className = "col-resize-handle";
       th.appendChild(handle);
-      attachDragHandler(handle, th, nextTh);
+      attachDragHandler(handle, th, table);
     }
   };
 })();

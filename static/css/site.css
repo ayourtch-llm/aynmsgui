@@ -127,6 +127,9 @@ li.dropdown { display: inline-block; position: relative; }
     padding: 24px 24px;
     max-width: 1400px;
     margin: 0 auto;
+    /* When a column is resized wider than the container (colresize.js),
+     * scroll horizontally rather than overlap the page. */
+    overflow-x: auto;
 }
 
 /* TABLE STYLES */
@@ -300,13 +303,14 @@ details summary { cursor: pointer; font-weight: 600; color: #1a5276; }
     position: absolute;
     top: 0;
     right: 0;
-    width: 5px;
+    width: 6px;
     height: 100%;
     cursor: col-resize;
-    background: transparent;
+    /* Always visible as a faint sliver so users see the grab area. */
+    background: rgba(255, 255, 255, 0.18);
     user-select: none;
 }
-.col-resize-handle:hover { background: rgba(255, 255, 255, 0.25); }
+.col-resize-handle:hover { background: rgba(255, 255, 255, 0.5); }
 
 /* RESPONSIVE */
 @media (max-width: 960px) {

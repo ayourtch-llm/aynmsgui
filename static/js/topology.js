@@ -226,6 +226,13 @@
           "target-arrow-shape": "triangle",
           "target-arrow-color": "#666",
           "arrow-scale": 1.1,
+          // Anchor both endpoints just outside the port box outline so
+          // the line is clearly visible from edge-to-edge instead of
+          // disappearing into the port's center.
+          "source-endpoint": "outside-to-line",
+          "target-endpoint": "outside-to-line",
+          "source-distance-from-node": 1,
+          "target-distance-from-node": 1,
         },
       },
       {
@@ -234,6 +241,15 @@
           "line-color": "#2980b9",
           "target-arrow-color": "#2980b9",
           width: 2,
+        },
+      },
+      // ── Peer-port highlight (added on selection of a port) ───────────
+      {
+        selector: "node.port.highlighted",
+        style: {
+          "border-color": "#2980b9",
+          "border-width": 2,
+          "background-color": "#eaf3fb",
         },
       },
     ];
@@ -322,6 +338,16 @@
     cy.fit(undefined, 30);
   }
 
+  function highlightPeersOf(node) {
+    // Clear previous peer highlights.
+    cy.nodes(".highlighted").removeClass("highlighted");
+    if (!node.hasClass("port")) return;
+    node.connectedEdges().forEach(function (edge) {
+      var peer = edge.source().id() === node.id() ? edge.target() : edge.source();
+      peer.addClass("highlighted");
+    });
+  }
+
   function render() {
     if (!lastData) return;
     var managedOnly = document.getElementById("topology-managed-only").checked;
@@ -334,7 +360,15 @@
       style: styles(),
       wheelSensitivity: 0.2,
     });
-    cy.on("tap", "node", function (evt) { renderDetail(evt.target); });
+    // Detail panel update + peer highlight on selection (fires on click
+    // and on drag-start, so the highlight is visible while moving a port).
+    cy.on("select", "node", function (evt) {
+      renderDetail(evt.target);
+      highlightPeersOf(evt.target);
+    });
+    cy.on("unselect", "node", function () {
+      cy.nodes(".highlighted").removeClass("highlighted");
+    });
     fitAndLayout();
     var when = lastData.fetched_at
       ? new Date(lastData.fetched_at).toLocaleTimeString()

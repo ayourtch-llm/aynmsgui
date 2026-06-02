@@ -364,6 +364,35 @@
           width: 3,
         },
       },
+      // Stale = present in earlier polls, missing from the latest one.
+      // Render very pale so they fade into the background without being
+      // removed outright — useful for spotting devices that just dropped.
+      {
+        selector: "node.device.stale",
+        style: {
+          "background-color": "#f5f5f5",
+          "background-opacity": 0.6,
+          "border-color": "#cfcfcf",
+          color: "#aaa",
+        },
+      },
+      {
+        selector: "node.port.stale",
+        style: {
+          "background-color": "#fafafa",
+          "border-color": "#dcdcdc",
+          color: "#bbb",
+        },
+      },
+      {
+        selector: "edge.stale",
+        style: {
+          "line-color": "#dcdcdc",
+          "mid-target-arrow-color": "#dcdcdc",
+          "mid-source-arrow-color": "#dcdcdc",
+          color: "#bbb",
+        },
+      },
     ];
   }
 
@@ -941,12 +970,14 @@
     var newById = {};
     newEls.forEach(function (el) { newById[el.data.id] = el; });
 
-    // 1) Remove elements no longer present
-    var toRemove = [];
+    // 1) Mark elements no longer present as "stale" instead of removing
+    //    them. Lets the operator still see (and click on) devices that
+    //    have dropped out of CDP — they fade rather than vanish.
     cy.elements().forEach(function (el) {
-      if (!newById[el.id()]) toRemove.push(el);
+      if (!newById[el.id()]) {
+        el.addClass("stale");
+      }
     });
-    if (toRemove.length) cy.remove(cy.collection(toRemove));
 
     // 2) Add new elements; update existing ones in place.
     //    Add devices first (parents), then port-children, then edges.
@@ -976,13 +1007,14 @@
         // Update data fields (label, description, ip, etc.) without
         // touching the position.
         existing.data(el.data);
-        // If managed-only / classes changed, refresh.
+        // Refresh classes (including dropping any prior .stale marker).
         if (el.classes) {
           var oldClasses = (existing.classes() || []).join(" ");
           if (oldClasses !== el.classes) {
             existing.classes(el.classes);
           }
         }
+        existing.removeClass("stale");
       }
     });
 

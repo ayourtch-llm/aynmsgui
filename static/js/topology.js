@@ -706,6 +706,21 @@
     cy.fit(undefined, 30);
   }
 
+  // Return the set of unique device-id neighbors of `deviceId` (derived
+  // from its port-children's connected edges).
+  function deviceNeighborsOf(deviceId) {
+    var node = cy.getElementById(deviceId);
+    var neighbors = new Set();
+    if (!node.length) return neighbors;
+    node.children().connectedEdges().forEach(function (e) {
+      var sParent = e.source().isChild() ? e.source().parent().first().id() : e.source().id();
+      var tParent = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
+      var other = sParent === deviceId ? tParent : sParent;
+      if (other !== deviceId) neighbors.add(other);
+    });
+    return neighbors;
+  }
+
   // Walk the device graph breadth-first starting from `rootId`, returning
   // the set of device ids reachable in <= `depth` hops (inclusive of root).
   function bfsDevices(rootId, depth) {
@@ -714,13 +729,8 @@
     for (var d = 0; d < depth; d++) {
       var next = [];
       frontier.forEach(function (id) {
-        var node = cy.getElementById(id);
-        if (!node.length) return;
-        node.children().connectedEdges().forEach(function (e) {
-          var sParent = e.source().isChild() ? e.source().parent().first().id() : e.source().id();
-          var tParent = e.target().isChild() ? e.target().parent().first().id() : e.target().id();
-          var other = sParent === id ? tParent : sParent;
-          if (other !== id && !visited.has(other)) {
+        deviceNeighborsOf(id).forEach(function (other) {
+          if (!visited.has(other)) {
             visited.add(other);
             next.push(other);
           }
@@ -730,6 +740,22 @@
       if (!frontier.length) break;
     }
     return visited;
+  }
+
+  // For every unselected device that's a "leaf" (degree 1) whose single
+  // neighbor is in the selection, pull it in too. Lets the user grab a
+  // hub and have its dangling endpoints (APs, cameras, codecs with one
+  // CDP adjacency) come along for the ride — without having to bump the
+  // BFS depth and accidentally swallow whole other hubs.
+  function augmentSelectionWithLeaves(selected) {
+    cy.nodes(".device").forEach(function (d) {
+      var id = d.id();
+      if (selected.has(id)) return;
+      var ns = deviceNeighborsOf(id);
+      if (ns.size !== 1) return;
+      var only = ns.values().next().value;
+      if (selected.has(only)) selected.add(id);
+    });
   }
 
   // ctrl+right-click on a device cycles a BFS-radius selection:
@@ -755,6 +781,11 @@
     }
 
     var set = bfsDevices(id, bfsState.depth);
+    // Pull in any "single-connected" devices hanging off the BFS frontier
+    // (APs/cameras/codecs with a single CDP adjacency to one of the
+    // already-selected devices). They naturally belong to the moving
+    // cluster without requiring another depth step.
+    augmentSelectionWithLeaves(set);
 
     suppressSelectHandler = true;
     cy.elements().unselect();

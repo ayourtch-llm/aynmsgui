@@ -30,6 +30,24 @@
     return deviceId + "::" + (portName || "?");
   }
 
+  // Natural compare: "Gi1/0/2" < "Gi1/0/10" by treating runs of digits as
+  // numbers. Falls back to ordinary string compare for letter chunks.
+  function naturalCompare(a, b) {
+    var ax = String(a || "").split(/(\d+)/).filter(function (s) { return s !== ""; });
+    var bx = String(b || "").split(/(\d+)/).filter(function (s) { return s !== ""; });
+    for (var i = 0; i < ax.length && i < bx.length; i++) {
+      var ai = ax[i], bi = bx[i];
+      var an = /^\d+$/.test(ai), bn = /^\d+$/.test(bi);
+      if (an && bn) {
+        var diff = parseInt(ai, 10) - parseInt(bi, 10);
+        if (diff !== 0) return diff;
+      } else if (ai !== bi) {
+        return ai < bi ? -1 : 1;
+      }
+    }
+    return ax.length - bx.length;
+  }
+
   function nodeDeviceData(node) {
     // node may be a port (child) or device (parent); return the device data.
     if (node.isChild()) return node.parent().first().data();
@@ -102,39 +120,40 @@
       });
     });
 
-    // 3. Emit one port-child per (device, port) actually used by an edge,
-    //    plus the port-anchored edges themselves.
-    var emittedPorts = new Set();
+    // 3. Gather port usage per device (each port appears at most once even
+    //    if multiple edges land on it). We emit children in natural-sorted
+    //    order — fcose's compound layout uses insertion order as a hint,
+    //    and the post-layout alignment pass strictly orders them after.
+    var portsByDevice = {};
     data.edges.forEach(function (e) {
       if (!visibleDevices.has(e.source) || !visibleDevices.has(e.target)) return;
-      var srcPortId = portChildId(e.source, e.sport);
-      var tgtPortId = portChildId(e.target, e.tport);
-      if (!emittedPorts.has(srcPortId)) {
-        emittedPorts.add(srcPortId);
+      (portsByDevice[e.source] = portsByDevice[e.source] || new Set()).add(e.sport || "?");
+      (portsByDevice[e.target] = portsByDevice[e.target] || new Set()).add(e.tport || "?");
+    });
+    Object.keys(portsByDevice).forEach(function (deviceId) {
+      var sorted = Array.from(portsByDevice[deviceId]).sort(naturalCompare);
+      sorted.forEach(function (portName) {
         els.push({
           group: "nodes",
-          data: { id: srcPortId, parent: e.source, label: e.sport || "?" },
+          data: { id: portChildId(deviceId, portName), parent: deviceId, label: portName },
           classes: "port",
         });
-      }
-      if (!emittedPorts.has(tgtPortId)) {
-        emittedPorts.add(tgtPortId);
-        els.push({
-          group: "nodes",
-          data: { id: tgtPortId, parent: e.target, label: e.tport || "?" },
-          classes: "port",
-        });
-      }
+      });
+    });
+
+    // 4. Emit edges (port → port).
+    data.edges.forEach(function (e) {
+      if (!visibleDevices.has(e.source) || !visibleDevices.has(e.target)) return;
       els.push({
         group: "edges",
         data: {
           id: e.id,
-          source: srcPortId,
-          target: tgtPortId,
+          source: portChildId(e.source, e.sport),
+          target: portChildId(e.target, e.tport),
           sport: e.sport,
           tport: e.tport,
-          // Stash the device-level endpoints so renderDetail can compute
-          // direction without re-walking the port hierarchy.
+          // Stash device-level endpoints so renderDetail can compute
+          // direction without walking the port hierarchy.
           _sourceDevice: e.source,
           _targetDevice: e.target,
         },
@@ -224,15 +243,21 @@
     var common = { name: name, animate: false, fit: true, padding: 40 };
     if (name === "fcose") {
       return Object.assign(common, {
-        quality: "default",
+        // "proof" runs more passes and yields fewer crossings; ~2× slower
+        // than "default" but the difference is invisible on graphs <1k nodes.
+        quality: "proof",
         randomize: true,
-        nodeSeparation: 80,
-        idealEdgeLength: 120,
-        nodeRepulsion: 8000,
-        gravity: 0.2,
-        gravityCompound: 1.5,
-        numIter: 2500,
+        nodeSeparation: 90,
+        idealEdgeLength: 140,
+        nodeRepulsion: 9000,
+        gravity: 0.18,
+        gravityCompound: 1.6,
+        numIter: 4000,
+        // Tile child nodes inside compound parents, with tight spacing —
+        // the post-layout pass re-aligns them strictly anyway.
         tile: true,
+        tilingPaddingHorizontal: 4,
+        tilingPaddingVertical: 4,
         packComponents: true,
       });
     }
@@ -266,14 +291,34 @@
     return common;
   }
 
+  // After the macro layout runs, place each device's port-children in a
+  // vertical column centered on the device, sorted by port name. The parent
+  // auto-resizes to fit; cy.fit() afterward refreshes the viewport.
+  function alignChildrenInColumns() {
+    if (!cy) return;
+    cy.startBatch();
+    cy.nodes(".device").forEach(function (parent) {
+      var children = parent.children().sort(function (a, b) {
+        return naturalCompare(a.data("label"), b.data("label"));
+      });
+      if (!children.length) return;
+      var pos = parent.position();
+      var spacing = 16; // px between port rows
+      var startY = pos.y - ((children.length - 1) * spacing) / 2;
+      children.forEach(function (child, idx) {
+        child.position({ x: pos.x, y: startY + idx * spacing });
+      });
+    });
+    cy.endBatch();
+  }
+
   function fitAndLayout() {
     if (!cy) return;
     var name = document.getElementById("topology-layout").value;
-    // Fall back to cose if fcose extension didn't load.
-    if (name === "fcose" && !cy.layout(layoutOptions("fcose")).options) {
-      name = "cose";
-    }
     cy.layout(layoutOptions(name)).run();
+    if (name === "fcose" || name === "cose") {
+      alignChildrenInColumns();
+    }
     cy.fit(undefined, 30);
   }
 

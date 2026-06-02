@@ -17,6 +17,10 @@ use crate::state::AppState;
 pub struct DiffOverviewItem {
     pub name: String,
     pub device_name: String,
+    /// Live hostname from seen_assets, falling back to the configured
+    /// hostname from the logical-device JSON when seen_assets has nothing.
+    /// "-" if neither source has anything.
+    pub hostname: String,
     pub has_diff: bool,
     pub diff_preview: String,
     pub status_class: &'static str,
@@ -84,13 +88,15 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         }
     };
 
-    // Build serial → logical device name(s) mapping
-    let serial_map = state
+    // Load logical-device configs once; both the serial→name map and the
+    // per-row hostname lookup pull from this.
+    let device_configs = state
         .config
         .cfggen_base_dir
         .as_ref()
-        .map(|base| serial_to_device_names(&load_all_device_configs(base)))
+        .map(|base| load_all_device_configs(base))
         .unwrap_or_default();
+    let serial_map = serial_to_device_names(&device_configs);
 
     // Per-row Retrieve button needs to know whether the device is fresh.
     // Compute the freshness cutoff once and snapshot seen_assets.
@@ -159,9 +165,33 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             (has_diff, preview)
         };
 
-        let device_name = serial_map
-            .get(&name)
+        let logical_names = serial_map.get(&name);
+        let device_name = logical_names
             .map(|names| names.join(", "))
+            .unwrap_or_else(|| "-".to_string());
+
+        // Hostname: live seen_assets hostname first; if that's missing,
+        // fall back to the hostname configured in any of the matching
+        // logical-device JSONs (root `hostname` or `vars.hostname`).
+        let hostname = seen
+            .get(&name)
+            .and_then(|d| d.hostname.clone().filter(|s| !s.is_empty()))
+            .or_else(|| {
+                logical_names.and_then(|names| {
+                    names.iter().find_map(|ln| {
+                        let cfg = device_configs.get(ln)?;
+                        cfg.get("hostname")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| {
+                                cfg.get("vars")
+                                    .and_then(|v| v.get("hostname"))
+                                    .and_then(|v| v.as_str())
+                            })
+                            .filter(|s| !s.is_empty())
+                            .map(String::from)
+                    })
+                })
+            })
             .unwrap_or_else(|| "-".to_string());
 
         // Retrieve-button gating: disabled if the device isn't in
@@ -181,6 +211,7 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         items.push(DiffOverviewItem {
             name,
             device_name,
+            hostname,
             has_diff,
             diff_preview,
             status_class: if has_diff { "has-diff" } else { "no-diff" },

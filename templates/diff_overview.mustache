@@ -2,12 +2,13 @@
 {{> quicksearch}}
 <div class="table-scroll">
 <table id="{{quicksearch_table_id}}">
-<thead><tr><th>Serial</th><th>Logical Device</th><th>Status</th><th>Preview</th><th>Action</th></tr></thead>
+<thead><tr><th>Serial</th><th>Logical Device</th><th>Hostname</th><th>Status</th><th>Preview</th><th>Action</th></tr></thead>
 <tbody>
 {{#items}}
 <tr class="{{status_class}}">
   <td><a href="/diff/{{name}}">{{name}}</a></td>
   <td>{{device_name}}</td>
+  <td>{{hostname}}</td>
   <td>{{status_text}}</td>
   <td><pre>{{diff_preview}}</pre></td>
   <td>

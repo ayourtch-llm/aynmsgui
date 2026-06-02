@@ -199,9 +199,10 @@ tbody tr:nth-child(even) { background-color: #f0f1f3; }
 tbody tr:hover { background-color: #e3edf7; }
 
 /* Diff overview row status: tint the Status cell instead of the whole row
- * so zebra/hover effects still show. */
-tr.has-diff td:nth-child(3) { color: #c0392b; font-weight: 600; }
-tr.no-diff td:nth-child(3) { color: #95a5a6; }
+ * so zebra/hover effects still show. The diff_overview table has the
+ * Status column at index 4 (Serial · Logical Device · Hostname · Status). */
+tr.has-diff td:nth-child(4) { color: #c0392b; font-weight: 600; }
+tr.no-diff td:nth-child(4) { color: #95a5a6; }
 
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint

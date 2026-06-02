@@ -1053,6 +1053,17 @@
     var managedOnly = document.getElementById("topology-managed-only").checked;
     var newEls = buildElements(newData, managedOnly);
 
+    // Snapshot positions of every device that exists before the merge.
+    // After the merge runs (and alignChildrenInColumns repositions port
+    // children, which re-centers the parent's centroid), we restore each
+    // pre-existing device to exactly where it was. New devices are
+    // positioned separately via positionNewDevice / saved positions.
+    var prevPositions = {};
+    cy.nodes(".device").forEach(function (d) {
+      var p = d.position();
+      prevPositions[d.id()] = { x: p.x, y: p.y };
+    });
+
     // Build maps of new elements by id
     var newById = {};
     newEls.forEach(function (el) { newById[el.data.id] = el; });
@@ -1133,6 +1144,16 @@
 
     // Realign port-children for any device whose port set changed.
     alignChildrenInColumns();
+
+    // Restore positions of every pre-existing device. alignChildrenInColumns
+    // may have shifted parents whose port set changed (because the parent's
+    // position is the centroid of its children, and the column re-centers
+    // them); restoring here guarantees that nothing in the existing layout
+    // moves as a side effect of the merge.
+    Object.keys(prevPositions).forEach(function (id) {
+      var node = cy.getElementById(id);
+      if (node.length) node.position(prevPositions[id]);
+    });
 
     // Persist the updated positions (new ones are now seeded).
     saveCurrentPositions();

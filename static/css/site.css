@@ -163,6 +163,11 @@ tbody tr:nth-child(odd) { background-color: #ffffff; }
 tbody tr:nth-child(even) { background-color: #f0f1f3; }
 tbody tr:hover { background-color: #e3edf7; }
 
+/* Diff overview row status: tint the Status cell instead of the whole row
+ * so zebra/hover effects still show. */
+tr.has-diff td:nth-child(3) { color: #c0392b; font-weight: 600; }
+tr.no-diff td:nth-child(3) { color: #95a5a6; }
+
 td.center, th.center { text-align: center; }
 
 /* CARDS (dashboard) */

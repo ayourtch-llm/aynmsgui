@@ -44,8 +44,91 @@ use axum::{
 use aycfggen::model::LogicalDeviceConfig;
 use aycfggen::provenance::{LineProv, ProvSource};
 use aycfggen::sources::LogicalDeviceSource;
+use aycicdiff::diff::diff_model::{DiffAction, DiffTree};
+use aycicdiff::model::config_tree::ConfigNode;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
+
+/// Events emitted by walking a `DiffTree`. The reconcile renderer consumes
+/// them in order, maintaining `iface_ctx` from Enter/Exit so per-port
+/// grouping has authoritative context (no parsing of textual delta).
+#[derive(Debug)]
+enum WalkEvent {
+    /// Entered a section (e.g. `interface Gi1/0/12`, `router bgp 65001`).
+    /// We push the header onto the context stack until the matching Exit.
+    SectionEnter(String),
+    SectionExit,
+    /// A target-side line that needs to be applied to the device.
+    Add(String),
+    /// A device-side line that the target wants removed — the actual command
+    /// running on the device. NOT the `no X` form aycicdiff would emit.
+    Remove(String),
+}
+
+fn walk_actions(actions: &[DiffAction], out: &mut Vec<WalkEvent>) {
+    for action in actions {
+        match action {
+            DiffAction::Add(node) => walk_add_node(node, out),
+            DiffAction::Remove(node) => walk_remove_node(node, out),
+            DiffAction::ModifySection {
+                header,
+                child_actions,
+                ..
+            } => {
+                out.push(WalkEvent::SectionEnter(header.clone()));
+                walk_actions(child_actions, out);
+                out.push(WalkEvent::SectionExit);
+            }
+            DiffAction::ReplaceOrdered {
+                header,
+                remove_children,
+                add_children,
+            } => {
+                out.push(WalkEvent::SectionEnter(header.clone()));
+                for r in remove_children {
+                    out.push(WalkEvent::Remove(r.text.clone()));
+                }
+                for a in add_children {
+                    out.push(WalkEvent::Add(a.text.clone()));
+                }
+                out.push(WalkEvent::SectionExit);
+            }
+        }
+    }
+}
+
+fn walk_add_node(node: &ConfigNode, out: &mut Vec<WalkEvent>) {
+    match node {
+        ConfigNode::Leaf(l) => out.push(WalkEvent::Add(l.text.clone())),
+        ConfigNode::Section(s) => {
+            // Whole section added: emit the header as an Add too, then
+            // every child verbatim.
+            out.push(WalkEvent::Add(s.header.clone()));
+            out.push(WalkEvent::SectionEnter(s.header.clone()));
+            for child in &s.children {
+                walk_add_node(child, out);
+            }
+            out.push(WalkEvent::SectionExit);
+        }
+    }
+}
+
+fn walk_remove_node(node: &ConfigNode, out: &mut Vec<WalkEvent>) {
+    match node {
+        ConfigNode::Leaf(l) => out.push(WalkEvent::Remove(l.text.clone())),
+        ConfigNode::Section(s) => {
+            // Whole section is on the device but not in target. The header
+            // itself is drift (e.g. `interface Vlan999`), and the children
+            // sit underneath that context.
+            out.push(WalkEvent::Remove(s.header.clone()));
+            out.push(WalkEvent::SectionEnter(s.header.clone()));
+            for child in &s.children {
+                walk_remove_node(child, out);
+            }
+            out.push(WalkEvent::SectionExit);
+        }
+    }
+}
 
 use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
 use crate::state::AppState;
@@ -335,11 +418,20 @@ pub async fn reconcile_detail(
         Err(_) => String::new(),
     };
 
-    let delta = if target_text == current_text {
-        String::new()
+    // Use aycicdiff's structured diff so we get authoritative Add/Remove
+    // actions instead of having to parse "no X" prefixes out of a textual
+    // delta. Remove(node) carries the literal device-side text — that's
+    // what we display in the drift section and absorb into services.
+    let rules = aycicdiff::rules::RulesConfig::builtin();
+    let current_tree = aycicdiff::parser::parse_config(&current_text, &rules);
+    let target_tree = aycicdiff::parser::parse_config(&target_text, &rules);
+    let diff_tree: DiffTree = if target_text == current_text {
+        DiffTree::new()
     } else {
-        aycicdiff::generate_delta(&current_text, &target_text, None)
+        aycicdiff::diff::diff_configs(&current_tree, &target_tree, &rules)
     };
+    let mut events: Vec<WalkEvent> = Vec::new();
+    walk_actions(&diff_tree.actions, &mut events);
 
     // Index target lines by trimmed text → list of (target_line_idx, &prov).
     let mut by_text: HashMap<String, Vec<usize>> = HashMap::new();
@@ -347,92 +439,106 @@ pub async fn reconcile_detail(
         by_text.entry(p.text.trim().to_string()).or_default().push(i);
     }
 
-    // Walk the delta, building (line + chosen prov + interface ctx).
+    // Walk the structured events, building (line + chosen prov + interface ctx).
     let mut walked: Vec<(ReconcileLineCtx, Option<usize>, String)> = Vec::new();
-    let mut current_iface_ctx: Option<String> = None;
+    let mut ctx_stack: Vec<String> = Vec::new();
     let mut resolved = 0usize;
     let mut unresolved = 0usize;
     let mut affected_services_set = std::collections::HashSet::new();
 
-    for raw_line in delta.lines() {
-        let line = raw_line.to_string();
-        let trimmed_start = line.trim_start();
-        let indent = line.len() - trimmed_start.len();
-        let is_remove = trimmed_start.starts_with("no ");
-        let direction = if is_remove { "remove" } else { "add" };
-
-        if trimmed_start.starts_with("interface ") {
-            current_iface_ctx = Some(trimmed_start.trim().to_string());
-        } else if trimmed_start.trim() == "exit" || trimmed_start.trim() == "!" {
-            current_iface_ctx = None;
-        }
-
-        let search_text = if is_remove {
-            trimmed_start[3..].trim().to_string()
-        } else {
-            trimmed_start.trim().to_string()
-        };
-
-        let mut chosen_idx: Option<usize> = None;
-        let (label, class, detail) = if is_remove {
-            (
-                "currently on device, not in target".to_string(),
-                "src-removed-from-current",
-                String::new(),
-            )
-        } else {
-            match by_text.get(&search_text) {
-                None => ("(unresolved)".to_string(), "src-unknown", String::new()),
-                Some(indices) => {
-                    let mut chosen: Option<usize> = None;
-                    if let Some(ctx) = &current_iface_ctx {
-                        for &idx in indices {
-                            if line_is_in_interface_block(&target_provs, idx, ctx) {
-                                chosen = Some(idx);
-                                break;
-                            }
-                        }
-                    }
-                    if chosen.is_none() && indices.len() == 1 {
-                        chosen = Some(indices[0]);
-                    }
-                    chosen_idx = chosen;
-                    match chosen {
-                        Some(idx) => {
-                            let (lbl, cls, det) = label_for(&target_provs[idx].source);
-                            if let ProvSource::PortService { service, .. } = &target_provs[idx].source {
-                                affected_services_set.insert(service.clone());
-                            }
-                            (lbl, cls, det)
-                        }
-                        None => (
-                            format!("{} candidates (ambiguous)", indices.len()),
-                            "src-unknown",
-                            String::new(),
-                        ),
-                    }
-                }
+    for ev in &events {
+        match ev {
+            WalkEvent::SectionEnter(header) => {
+                ctx_stack.push(header.trim().to_string());
+                continue;
             }
-        };
+            WalkEvent::SectionExit => {
+                ctx_stack.pop();
+                continue;
+            }
+            WalkEvent::Add(text) | WalkEvent::Remove(text) => {
+                let is_remove = matches!(ev, WalkEvent::Remove(_));
+                let direction = if is_remove { "remove" } else { "add" };
+                let iface_ctx = ctx_stack
+                    .iter()
+                    .rev()
+                    .find(|h| h.starts_with("interface "))
+                    .cloned()
+                    .unwrap_or_default();
+                // For the display, indent by ctx depth so the row reads
+                // naturally inside a section.
+                let indent = ctx_stack.len();
+                let display_text = if indent > 0 {
+                    format!("{}{}", " ".repeat(indent), text.trim())
+                } else {
+                    text.clone()
+                };
 
-        if class == "src-unknown" || class == "src-removed-from-current" {
-            unresolved += 1;
-        } else {
-            resolved += 1;
+                let mut chosen_idx: Option<usize> = None;
+                let (label, class, detail) = if is_remove {
+                    (
+                        "currently on device, not in target".to_string(),
+                        "src-removed-from-current",
+                        String::new(),
+                    )
+                } else {
+                    let search_text = text.trim().to_string();
+                    match by_text.get(&search_text) {
+                        None => ("(unresolved)".to_string(), "src-unknown", String::new()),
+                        Some(indices) => {
+                            let mut chosen: Option<usize> = None;
+                            if !iface_ctx.is_empty() {
+                                for &idx in indices {
+                                    if line_is_in_interface_block(&target_provs, idx, &iface_ctx) {
+                                        chosen = Some(idx);
+                                        break;
+                                    }
+                                }
+                            }
+                            if chosen.is_none() && indices.len() == 1 {
+                                chosen = Some(indices[0]);
+                            }
+                            chosen_idx = chosen;
+                            match chosen {
+                                Some(idx) => {
+                                    let (lbl, cls, det) = label_for(&target_provs[idx].source);
+                                    if let ProvSource::PortService { service, .. } =
+                                        &target_provs[idx].source
+                                    {
+                                        affected_services_set.insert(service.clone());
+                                    }
+                                    (lbl, cls, det)
+                                }
+                                None => (
+                                    format!("{} candidates (ambiguous)", indices.len()),
+                                    "src-unknown",
+                                    String::new(),
+                                ),
+                            }
+                        }
+                    }
+                };
+
+                if class == "src-unknown" || class == "src-removed-from-current" {
+                    unresolved += 1;
+                } else {
+                    resolved += 1;
+                }
+
+                walked.push((
+                    ReconcileLineCtx {
+                        text: display_text,
+                        indent,
+                        direction,
+                        source_label: label,
+                        source_class: class,
+                        detail,
+                    },
+                    chosen_idx,
+                    iface_ctx,
+                ));
+            }
         }
-
-        walked.push((
-            ReconcileLineCtx {
-                text: line,
-                indent,
-                direction,
-                source_label: label,
-                source_class: class,
-                detail,
-            },
-            chosen_idx,
-            current_iface_ctx.clone().unwrap_or_default(),
-        ));
     }
 
     // Group by attribution.
@@ -465,22 +571,25 @@ pub async fn reconcile_detail(
     }
 
     for (line_ctx, chosen_idx, iface_ctx) in walked {
-        // Drift lines first.
+        // Drift lines first. line_ctx.text is the literal device-side
+        // command (already extracted by walk_remove_node from the
+        // ConfigTree's Remove(node) → leaf.text), so no string trickery
+        // here — the bare command IS what the device has.
         if line_ctx.direction == "remove" {
-            let bare_cmd = line_ctx
-                .text
-                .trim_start()
-                .strip_prefix("no ")
-                .unwrap_or(&line_ctx.text)
-                .trim()
-                .to_string();
+            let bare_cmd = line_ctx.text.trim().to_string();
+            // Synthesize the form aycicdiff would emit in the textual
+            // delta, for the secondary column. Goes through the rules so
+            // override-registry negations (e.g. "shutdown" → "no shutdown")
+            // are accurate.
+            let negation_emitted =
+                aycicdiff::serialize::negation::negate_command_with_rules(&bare_cmd, &rules);
             let (module_idx, port_name, current_service) = iface_to_port
                 .get(&iface_ctx)
                 .cloned()
                 .unwrap_or((0, String::new(), String::new()));
             let has_port = !port_name.is_empty();
             drift_lines.push(DriftLineCtx {
-                full_text: line_ctx.text.clone(),
+                full_text: negation_emitted,
                 bare_cmd,
                 interface_ctx: iface_ctx.clone(),
                 port_name,

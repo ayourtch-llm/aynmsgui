@@ -179,9 +179,24 @@ struct ServiceOptionCtx {
     name: String,
     selected: bool,
     /// True iff this option is the import matcher's suggestion for the
-    /// port — used to tag it visually in the dropdown so the operator
-    /// knows why the default is what it is.
+    /// port.
     is_suggested: bool,
+    /// True iff this option is the port's currently-assigned service.
+    is_current: bool,
+    /// Two-character prefix encoded once in Rust so the template can
+    /// just emit `{{prefix}} {{name}}` and have columns line up:
+    ///   "*→" — currently-assigned AND matcher agrees
+    ///   "* " — currently-assigned, matcher picked something else
+    ///   " →" — matcher's suggestion (not currently-assigned)
+    ///   "  " — neither
+    prefix: String,
+}
+
+fn service_option_prefix(is_current: bool, is_suggested: bool) -> String {
+    let mut s = String::with_capacity(2);
+    s.push(if is_current { '*' } else { ' ' });
+    s.push(if is_suggested { '→' } else { ' ' });
+    s
 }
 
 #[derive(Serialize)]
@@ -834,13 +849,19 @@ pub async fn reconcile_detail(
                             .unwrap_or_else(|| current_service.clone());
                         let service_options: Vec<ServiceOptionCtx> = available_services
                             .iter()
-                            .map(|svc| ServiceOptionCtx {
-                                name: svc.clone(),
-                                selected: svc == &selected_service,
-                                is_suggested: suggestion_for_this
+                            .map(|svc| {
+                                let is_suggested = suggestion_for_this
                                     .as_ref()
                                     .map(|s| s == svc)
-                                    .unwrap_or(false),
+                                    .unwrap_or(false);
+                                let is_current = svc == &current_service;
+                                ServiceOptionCtx {
+                                    name: svc.clone(),
+                                    selected: svc == &selected_service,
+                                    is_suggested,
+                                    is_current,
+                                    prefix: service_option_prefix(is_current, is_suggested),
+                                }
                             })
                             .collect();
                         PortGroupCtx {
@@ -967,13 +988,19 @@ pub async fn reconcile_detail(
                 .unwrap_or_else(|| current_service.clone());
             let service_options: Vec<ServiceOptionCtx> = available_services
                 .iter()
-                .map(|svc| ServiceOptionCtx {
-                    name: svc.clone(),
-                    selected: svc == &selected_service,
-                    is_suggested: suggestion_for_this
+                .map(|svc| {
+                    let is_suggested = suggestion_for_this
                         .as_ref()
                         .map(|s| s == svc)
-                        .unwrap_or(false),
+                        .unwrap_or(false);
+                    let is_current = svc == &current_service;
+                    ServiceOptionCtx {
+                        name: svc.clone(),
+                        selected: svc == &selected_service,
+                        is_suggested,
+                        is_current,
+                        prefix: service_option_prefix(is_current, is_suggested),
+                    }
                 })
                 .collect();
             port_groups_map.insert(

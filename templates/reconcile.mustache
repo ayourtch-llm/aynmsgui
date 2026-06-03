@@ -77,7 +77,7 @@
     <label>Try alternate service:
       <select name="try_service" class="port-multi-select">
         {{#service_options}}
-        <option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}{{#is_suggested}} (suggested){{/is_suggested}}</option>
+        <option value="{{name}}"{{#selected}} selected{{/selected}}>{{prefix}} {{name}}</option>
         {{/service_options}}
       </select>
     </label>

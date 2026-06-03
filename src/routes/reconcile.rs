@@ -534,16 +534,25 @@ pub async fn reconcile_detail(
                                 _ => None,
                             })
                             .unwrap_or_else(|| "?".to_string());
+                        let is_previewing = is_preview
+                            && preview_module_idx == *module_idx
+                            && preview_port_name == *port_name;
+                        // During preview, the dropdown should reflect the
+                        // service the operator just picked — not the saved
+                        // value, which still lives in the header
+                        // ("current service: <saved>") and in the banner.
+                        let selected_service = if is_previewing {
+                            preview_service.clone()
+                        } else {
+                            current_service.clone()
+                        };
                         let service_options: Vec<ServiceOptionCtx> = available_services
                             .iter()
                             .map(|svc| ServiceOptionCtx {
                                 name: svc.clone(),
-                                selected: svc == &current_service,
+                                selected: svc == &selected_service,
                             })
                             .collect();
-                        let is_previewing = is_preview
-                            && preview_module_idx == *module_idx
-                            && preview_port_name == *port_name;
                         PortGroupCtx {
                             module_idx: *module_idx,
                             port_name: port_name.clone(),

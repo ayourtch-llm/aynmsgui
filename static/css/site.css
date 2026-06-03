@@ -275,6 +275,40 @@ tr.rec-add    td pre.rec-line { color: #1b5e20; background: #f5fbf5; }
     background: #fff5f5; border-color: #e09090; color: #8a3a3a; font-style: italic;
 }
 
+/* Banner shown while previewing a service swap. */
+.reconcile-preview-banner {
+    background: #fff7e0;
+    border: 1px solid #f0c060;
+    padding: 8px 12px;
+    margin: 8px 0 16px 0;
+    border-radius: 4px;
+}
+
+/* Per-port group panel. Open by default; pale border so it groups
+ * visually with the others. */
+details.port-group, details.svi-group {
+    margin: 8px 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 6px 10px;
+    background: #ffffff;
+}
+details.port-group.previewing { border-color: #1a5276; background: #f0f5ff; }
+details.port-group > summary,
+details.svi-group > summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #1a1a2e;
+}
+.port-group-form {
+    margin: 8px 0;
+    padding: 6px 8px;
+    background: #fafafa;
+    border-radius: 3px;
+    font-size: 0.95em;
+}
+.port-group-form select { margin: 0 6px; min-width: 200px; }
+
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint
  * signals "this is here for context but you can't act on it." Win over

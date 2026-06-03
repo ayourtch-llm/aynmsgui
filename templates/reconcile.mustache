@@ -7,6 +7,20 @@
   <a href="/devices/{{device_name}}">Edit logical device</a>
 </p>
 
+{{#is_preview}}
+<div class="reconcile-preview-banner">
+  <strong>Preview mode:</strong> {{preview_banner}}.
+  Numbers below are the projected delta if you apply this swap.
+  <form method="POST" action="/diff/{{name}}/reconcile/swap" style="display:inline; margin-left:12px;">
+    <input type="hidden" name="module_idx" value="{{preview_module_idx}}">
+    <input type="hidden" name="port_name" value="{{preview_port_name}}">
+    <input type="hidden" name="service" value="{{preview_service}}">
+    <button type="submit">Commit swap</button>
+  </form>
+  <a href="/diff/{{name}}/reconcile" style="margin-left:8px;">Cancel preview</a>
+</div>
+{{/is_preview}}
+
 {{^has_delta}}
 <p style="color:#1b5e20; font-weight:600;">No changes — target and current configs match. Nothing to reconcile.</p>
 {{/has_delta}}
@@ -18,33 +32,126 @@
   <span style="color:#888;">{{unresolved_count}} unresolved</span> ·
   <strong>{{affected_services}}</strong> service(s) touched
 </div>
-<p style="color:#666; font-size:0.9em; margin-top:6px;">
-  Each row is a line of the delta (the set of commands the device needs to receive to match
-  target). The right column names the source in the target — change that source and the
-  delta line goes away. Lines marked "currently on device, not in target" came from drift
-  on the device and have no target-side source by definition.
-</p>
 
+{{#has_port_groups}}
+<h2>Per-port changes</h2>
+<p style="color:#666; font-size:0.9em;">
+  Pick a different service from the dropdown to see what the diff would look like with that
+  service in place. Nothing is written to disk until you click <em>Commit swap</em>.
+</p>
+{{#port_groups}}
+<details class="port-group{{#is_previewing}} previewing{{/is_previewing}}" open>
+  <summary>
+    <strong>{{derived_interface}}</strong>
+    &nbsp;·&nbsp; <code>{{port_name}}</code>
+    &nbsp;·&nbsp; current service: <code>{{current_service}}</code>
+    &nbsp;·&nbsp; {{line_count}} delta line(s)
+    {{#is_previewing}}
+    &nbsp;·&nbsp; <span style="color:#1a5276; font-weight:600;">previewing → {{previewing_service}}</span>
+    {{/is_previewing}}
+  </summary>
+  <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-form">
+    <input type="hidden" name="try_module" value="{{module_idx}}">
+    <input type="hidden" name="try_port" value="{{port_name}}">
+    <label>Try alternate service:
+      <select name="try_service">
+        {{#service_options}}
+        <option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}</option>
+        {{/service_options}}
+      </select>
+    </label>
+    <button type="submit">Preview swap</button>
+  </form>
+  <table class="reconcile-table">
+    <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
+    <tbody>
+    {{#lines}}
+    <tr class="rec-{{direction}}">
+      <td><pre class="rec-line">{{text}}</pre></td>
+      <td><span class="rec-src-badge {{source_class}}">{{source_label}}</span></td>
+    </tr>
+    {{/lines}}
+    </tbody>
+  </table>
+</details>
+{{/port_groups}}
+{{/has_port_groups}}
+
+{{#has_svi_groups}}
+<h2>SVI service changes</h2>
+{{#svi_groups}}
+<details class="svi-group" open>
+  <summary>
+    <strong>{{service}}</strong> &nbsp;·&nbsp; {{line_count}} delta line(s)
+  </summary>
+  <table class="reconcile-table">
+    <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
+    <tbody>
+    {{#lines}}
+    <tr class="rec-{{direction}}">
+      <td><pre class="rec-line">{{text}}</pre></td>
+      <td><span class="rec-src-badge {{source_class}}">{{source_label}}</span></td>
+    </tr>
+    {{/lines}}
+    </tbody>
+  </table>
+</details>
+{{/svi_groups}}
+{{/has_svi_groups}}
+
+{{#has_drift_lines}}
+<h2>Drift — currently on device but not in target</h2>
+<p style="color:#666; font-size:0.9em;">
+  These commands are running on the device but the template would remove them. Click
+  <em>Absorb into service</em> to append the command to the inferred port's service so
+  the template stops trying to remove it.
+</p>
 <table class="reconcile-table">
-<thead>
-<tr>
-  <th style="width:60%;">Delta line</th>
-  <th>Provenance (where this came from in the target)</th>
-</tr>
-</thead>
+<thead><tr><th>Delta line</th><th>Inferred port → service</th><th>Action</th></tr></thead>
 <tbody>
-{{#lines}}
-<tr class="rec-{{direction}}">
-  <td><pre class="rec-line">{{text}}</pre></td>
+{{#drift_lines}}
+<tr class="rec-remove">
+  <td><pre class="rec-line">{{full_text}}</pre></td>
   <td>
-    <span class="rec-src-badge {{source_class}}">{{source_label}}</span>
+    {{#has_port}}
+    <code>{{port_name}}</code> · <code>{{current_service}}</code>
+    {{/has_port}}
+    {{^has_port}}
+    <em style="color:#888;">no port context (drift outside interface block)</em>
+    {{/has_port}}
+  </td>
+  <td>
+    {{#has_port}}
+    <form method="POST" action="/diff/{{name}}/reconcile/absorb" style="display:inline;">
+      <input type="hidden" name="module_idx" value="{{module_idx}}">
+      <input type="hidden" name="port_name" value="{{port_name}}">
+      <input type="hidden" name="service" value="{{current_service}}">
+      <input type="hidden" name="command" value="{{bare_cmd}}">
+      <button type="submit" title="Append this command to {{current_service}}/port-config.txt">Absorb into {{current_service}}</button>
+    </form>
+    {{/has_port}}
   </td>
 </tr>
-{{/lines}}
+{{/drift_lines}}
 </tbody>
 </table>
+{{/has_drift_lines}}
+
+{{#has_other_lines}}
+<h2>Other delta lines (template, structural, unresolved)</h2>
+<table class="reconcile-table">
+<thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
+<tbody>
+{{#other_lines}}
+<tr class="rec-{{direction}}">
+  <td><pre class="rec-line">{{text}}</pre></td>
+  <td><span class="rec-src-badge {{source_class}}">{{source_label}}</span></td>
+</tr>
+{{/other_lines}}
+</tbody>
+</table>
+{{/has_other_lines}}
+
 {{/has_delta}}
 
-<p style="margin-top:18px;">
-  <a href="/diff">← Back to overview</a>
-</p>
+<p style="margin-top:18px;"><a href="/diff">← Back to overview</a></p>

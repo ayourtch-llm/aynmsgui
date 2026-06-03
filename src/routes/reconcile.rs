@@ -7,53 +7,106 @@
 //! line, which prologue/epilogue — so the operator can see at a glance
 //! which template change would absorb each hunk.
 //!
-//! This page is read-only in the first pass; the write actions (swap a
-//! port's service, promote a hunk to a new service, edit a template line)
-//! are tracked by task #32 in the reconcile work list.
+//! Drives the full reconcile cycle:
+//!
+//! - **Group per port.** Delta lines whose target source is a `PortService`
+//!   are grouped under that port. Each group shows the port's current
+//!   service plus a dropdown of available services. Picking one re-renders
+//!   the page under that hypothetical override (`?try_module=1&try_port=
+//!   Port36&try_service=access-vlan2`) so the operator can see the
+//!   projected delta before committing.
+//!
+//! - **Commit a swap.** `POST /diff/{name}/reconcile/swap` writes the new
+//!   service to the device JSON on disk, recompiles the target config,
+//!   and redirects back to the reconcile page.
+//!
+//! - **Absorb drift.** Delta lines that came from device drift (`no <cmd>`)
+//!   carry an "Add to <port's service>" button. `POST .../absorb` appends
+//!   the bare command to the service's `port-config.txt` so future compiles
+//!   include it and the drift disappears.
+//!
+//! - **Drop a target-side line.** Delta lines coming from a port's service
+//!   are also affordances to *remove* the line from the service (write
+//!   action coming in a follow-up; the read-only side is in place).
 //!
 //! Delta-line ↔ target-line matching is by trimmed text first, then
 //! disambiguated by the active context (current `interface X` block, etc).
-//! The pipeline never invents provenance: if a line can't be located in
-//! the target with confidence, we say "unknown" rather than guess.
 
 use std::collections::HashMap;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
-    routing::get,
-    Router,
+    response::{Html, IntoResponse, Redirect, Response},
+    routing::{get, post},
+    Form, Router,
 };
+use aycfggen::model::LogicalDeviceConfig;
 use aycfggen::provenance::{LineProv, ProvSource};
-use serde::Serialize;
-use tracing::{debug, warn};
+use aycfggen::sources::LogicalDeviceSource;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 use crate::state::AppState;
 
 // ── View models ──────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct ReconcileLineCtx {
-    /// The delta line itself, leading "no " preserved for clarity.
     text: String,
-    /// Indentation level, used only for visual hint in the template.
     indent: usize,
-    /// "add" if this line should be applied to the device,
-    /// "remove" if the line begins with "no " (delta wants to negate it).
     direction: &'static str,
-    /// Human-readable source label ("service access-vlan6:Port36",
-    /// "template AD6-X001-...conf:42", "structural PORTS-START", etc).
-    /// Empty if no provenance was found (typical for "remove" lines —
-    /// the line we're removing is in current, not in target).
     source_label: String,
-    /// CSS class hint: "src-template", "src-service-port", "src-svi",
-    /// "src-element", "src-structural", "src-prologue", "src-epilogue",
-    /// "src-unknown", "src-removed-from-current".
     source_class: &'static str,
-    /// Optional secondary detail (e.g., the service name when the kind
-    /// is PortService, so the template can render "→ swap to ..." actions).
     detail: String,
+}
+
+#[derive(Serialize)]
+struct ServiceOptionCtx {
+    name: String,
+    selected: bool,
+}
+
+#[derive(Serialize)]
+struct PortGroupCtx {
+    module_idx: usize,
+    port_name: String,
+    derived_interface: String,
+    current_service: String,
+    service_options: Vec<ServiceOptionCtx>,
+    lines: Vec<ReconcileLineCtx>,
+    line_count: usize,
+    /// Set when the page was rendered with this port's service overridden
+    /// (?try_* params). The template uses it to render a "Commit swap"
+    /// form pointing at /swap.
+    is_previewing: bool,
+    previewing_service: String,
+}
+
+#[derive(Serialize)]
+struct SviGroupCtx {
+    service: String,
+    lines: Vec<ReconcileLineCtx>,
+    line_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct DriftLineCtx {
+    /// Full delta line, with the leading "no " preserved.
+    full_text: String,
+    /// The bare command after stripping "no " — what would be appended
+    /// to a service's port-config.txt to absorb this drift.
+    bare_cmd: String,
+    /// Interface context the drift sits inside (used to infer the port).
+    interface_ctx: String,
+    /// The port we inferred for this drift, if any.
+    port_name: String,
+    module_idx: usize,
+    /// Current service for the inferred port, if known. Empty if we
+    /// couldn't infer which port the drift line belongs to (e.g. drift
+    /// outside any interface block).
+    current_service: String,
+    has_port: bool,
 }
 
 #[derive(Serialize)]
@@ -62,24 +115,81 @@ struct ReconcileCtx {
     device_name: String,
     hostname: String,
     has_delta: bool,
-    /// Number of distinct port services referenced from this delta.
-    /// Helps the operator gauge how concentrated the changes are.
     affected_services: usize,
-    /// Number of delta lines we could attribute to a concrete source.
     resolved_count: usize,
-    /// Number of delta lines we couldn't attribute.
     unresolved_count: usize,
-    /// Number of delta lines (total).
     total_count: usize,
-    /// List of delta lines + provenance.
-    lines: Vec<ReconcileLineCtx>,
+    /// Banner shown when ?try_* params were applied.
+    is_preview: bool,
+    preview_banner: String,
+    /// Form values to forward into POST /swap if the operator commits.
+    preview_module_idx: usize,
+    preview_port_name: String,
+    preview_service: String,
+    port_groups: Vec<PortGroupCtx>,
+    has_port_groups: bool,
+    svi_groups: Vec<SviGroupCtx>,
+    has_svi_groups: bool,
+    drift_lines: Vec<DriftLineCtx>,
+    has_drift_lines: bool,
+    other_lines: Vec<ReconcileLineCtx>,
+    has_other_lines: bool,
 }
 
-// ── Handler ──────────────────────────────────────────────────────────────────
+// ── Query / form ──────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct TryParams {
+    pub try_module: Option<usize>,
+    pub try_port: Option<String>,
+    pub try_service: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct SwapForm {
+    pub module_idx: usize,
+    pub port_name: String,
+    pub service: String,
+}
+
+#[derive(Deserialize)]
+pub struct AbsorbForm {
+    pub module_idx: usize,
+    pub port_name: String,
+    pub service: String,
+    pub command: String,
+}
+
+// ── Override LogicalDeviceSource ──────────────────────────────────────────────
+
+/// Wraps another `LogicalDeviceSource`, returning a mutated config for one
+/// specific device. Used to preview "what if port X were on service Y?"
+/// without touching disk.
+struct OverrideLogicalDeviceSource<'a> {
+    inner: &'a dyn LogicalDeviceSource,
+    device: String,
+    override_config: LogicalDeviceConfig,
+}
+
+impl LogicalDeviceSource for OverrideLogicalDeviceSource<'_> {
+    fn load_device_config(&self, name: &str) -> anyhow::Result<LogicalDeviceConfig> {
+        if name == self.device {
+            Ok(self.override_config.clone())
+        } else {
+            self.inner.load_device_config(name)
+        }
+    }
+    fn list_devices(&self) -> anyhow::Result<Vec<String>> {
+        self.inner.list_devices()
+    }
+}
+
+// ── Handler: GET reconcile page ───────────────────────────────────────────────
 
 pub async fn reconcile_detail(
     State(state): State<AppState>,
     Path(name): Path<String>,
+    Query(try_params): Query<TryParams>,
 ) -> Response {
     let cfggen_base = match &state.config.cfggen_base_dir {
         Some(p) if p.exists() => p.clone(),
@@ -92,7 +202,6 @@ pub async fn reconcile_detail(
 
     debug!(name = %name, "Loading reconcile page");
 
-    // Run the traced compile.
     use aycfggen::compile_traced::compile_device_traced;
     use aycfggen::fs_sources::{
         FsConfigElementSource, FsConfigTemplateSource, FsHardwareTemplateSource,
@@ -105,26 +214,84 @@ pub async fn reconcile_detail(
     let element_source = FsConfigElementSource::new(cfggen_base.join("config-elements"));
     let image_source = FsSoftwareImageSource::new(cfggen_base.join("software-images"));
 
-    let (target_text_raw, target_provs_raw) = match compile_device_traced(
-        &name,
-        &device_source,
-        &hw_source,
-        &service_source,
-        &template_source,
-        &element_source,
-        &image_source,
-    ) {
+    // Load the device config so we can inspect current per-port services and
+    // (optionally) build the override for preview.
+    let real_config = match device_source.load_device_config(&name) {
+        Ok(c) => c,
+        Err(err) => {
+            warn!(name = %name, error = %err, "load_device_config failed");
+            let msg = format!("Could not load device config: {err}");
+            return message(&state, "Load failed", &msg, Some(("/diff", "Back")));
+        }
+    };
+
+    let available_services = load_available_services(&cfggen_base);
+
+    // Build the override config if try_* params are set and validate the swap.
+    let (is_preview, preview_module_idx, preview_port_name, preview_service, override_config) =
+        match (&try_params.try_module, &try_params.try_port, &try_params.try_service) {
+            (Some(m), Some(p), Some(s)) => {
+                let mut cfg = real_config.clone();
+                let mut applied = false;
+                if let Some(Some(module)) = cfg.modules.get_mut(*m) {
+                    for port in &mut module.ports {
+                        if port.name == *p {
+                            port.service = s.clone();
+                            applied = true;
+                            break;
+                        }
+                    }
+                }
+                if applied {
+                    (true, *m, p.clone(), s.clone(), Some(cfg))
+                } else {
+                    warn!(
+                        device = %name, module_idx = m, port = %p,
+                        "try_* params point at a port that doesn't exist; rendering normally"
+                    );
+                    (false, 0, String::new(), String::new(), None)
+                }
+            }
+            _ => (false, 0, String::new(), String::new(), None),
+        };
+
+    // Compile (with or without override).
+    let traced_result = if let Some(override_cfg) = override_config.as_ref() {
+        let override_source = OverrideLogicalDeviceSource {
+            inner: &device_source,
+            device: name.clone(),
+            override_config: override_cfg.clone(),
+        };
+        compile_device_traced(
+            &name,
+            &override_source,
+            &hw_source,
+            &service_source,
+            &template_source,
+            &element_source,
+            &image_source,
+        )
+    } else {
+        compile_device_traced(
+            &name,
+            &device_source,
+            &hw_source,
+            &service_source,
+            &template_source,
+            &element_source,
+            &image_source,
+        )
+    };
+
+    let (target_text_raw, target_provs_raw) = match traced_result {
         Ok(pair) => pair,
         Err(err) => {
             warn!(name = %name, error = %err, "compile_device_traced failed");
             let msg = format!("Could not compile target config: {err}");
-            return message(&state, "Compile Failed", &msg, Some(("/diff", "Back")));
+            return message(&state, "Compile failed", &msg, Some(("/diff", "Back")));
         }
     };
 
-    // Normalize both target and current the same way the regular diff page
-    // does. Then filter the provenance vector in lockstep so prov[i] still
-    // matches target_lines[i] after blank-line / `end` removal.
     let (target_text, target_provs) = normalize_with_provs(&target_text_raw, &target_provs_raw);
 
     let current_file = current_path.join(format!("{}.cfg", name));
@@ -139,20 +306,14 @@ pub async fn reconcile_detail(
         aycicdiff::generate_delta(&current_text, &target_text, None)
     };
 
-    // Build a lookup index from trimmed text → all (line_idx, &LineProv).
-    // A trimmed line can map to many targets (same port-config "switchport
-    // mode access" appears under every access-VLAN service), so we keep the
-    // full list and disambiguate by current interface context as we walk
-    // the delta.
+    // Index target lines by trimmed text → list of (target_line_idx, &prov).
     let mut by_text: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, p) in target_provs.iter().enumerate() {
-        by_text
-            .entry(p.text.trim().to_string())
-            .or_default()
-            .push(i);
+        by_text.entry(p.text.trim().to_string()).or_default().push(i);
     }
 
-    let mut lines: Vec<ReconcileLineCtx> = Vec::new();
+    // Walk the delta, building (line + chosen prov + interface ctx).
+    let mut walked: Vec<(ReconcileLineCtx, Option<usize>, String)> = Vec::new();
     let mut current_iface_ctx: Option<String> = None;
     let mut resolved = 0usize;
     let mut unresolved = 0usize;
@@ -160,31 +321,24 @@ pub async fn reconcile_detail(
 
     for raw_line in delta.lines() {
         let line = raw_line.to_string();
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
-        let is_remove = trimmed.starts_with("no ");
+        let trimmed_start = line.trim_start();
+        let indent = line.len() - trimmed_start.len();
+        let is_remove = trimmed_start.starts_with("no ");
         let direction = if is_remove { "remove" } else { "add" };
 
-        // Track the active interface block (delta's own context). The
-        // delta typically opens with `interface X` then indented changes,
-        // closed by `exit`. We use that to disambiguate matches inside the
-        // target — a `switchport mode access` line inside the delta's
-        // `interface Gi1/0/12` block should match the target's Gi1/0/12
-        // block, not Gi1/0/1.
-        if trimmed.starts_with("interface ") {
-            current_iface_ctx = Some(trimmed.trim().to_string());
-        } else if trimmed.trim() == "exit" || trimmed.trim() == "!" {
+        if trimmed_start.starts_with("interface ") {
+            current_iface_ctx = Some(trimmed_start.trim().to_string());
+        } else if trimmed_start.trim() == "exit" || trimmed_start.trim() == "!" {
             current_iface_ctx = None;
         }
 
-        // For removes, the line we're negating ("switchport mode trunk")
-        // is in current, not target — no provenance to find.
         let search_text = if is_remove {
-            trimmed[3..].trim().to_string()
+            trimmed_start[3..].trim().to_string()
         } else {
-            trimmed.trim().to_string()
+            trimmed_start.trim().to_string()
         };
 
+        let mut chosen_idx: Option<usize> = None;
         let (label, class, detail) = if is_remove {
             (
                 "currently on device, not in target".to_string(),
@@ -192,16 +346,9 @@ pub async fn reconcile_detail(
                 String::new(),
             )
         } else {
-            // Look up by trimmed text, then disambiguate by interface ctx.
-            let candidate_indices = by_text.get(&search_text);
-            match candidate_indices {
-                None => {
-                    ("(unresolved)".to_string(), "src-unknown", String::new())
-                }
+            match by_text.get(&search_text) {
+                None => ("(unresolved)".to_string(), "src-unknown", String::new()),
                 Some(indices) => {
-                    // Filter by context: if we're inside an interface block,
-                    // prefer matches whose preceding `interface X` header
-                    // matches our current_iface_ctx.
                     let mut chosen: Option<usize> = None;
                     if let Some(ctx) = &current_iface_ctx {
                         for &idx in indices {
@@ -214,25 +361,20 @@ pub async fn reconcile_detail(
                     if chosen.is_none() && indices.len() == 1 {
                         chosen = Some(indices[0]);
                     }
+                    chosen_idx = chosen;
                     match chosen {
                         Some(idx) => {
                             let (lbl, cls, det) = label_for(&target_provs[idx].source);
-                            if let ProvSource::PortService { service, .. } =
-                                &target_provs[idx].source
-                            {
+                            if let ProvSource::PortService { service, .. } = &target_provs[idx].source {
                                 affected_services_set.insert(service.clone());
                             }
                             (lbl, cls, det)
                         }
-                        None => {
-                            // Ambiguous — show count.
-                            let count = indices.len();
-                            (
-                                format!("{count} candidates (ambiguous)"),
-                                "src-unknown",
-                                String::new(),
-                            )
-                        }
+                        None => (
+                            format!("{} candidates (ambiguous)", indices.len()),
+                            "src-unknown",
+                            String::new(),
+                        ),
                     }
                 }
             }
@@ -244,29 +386,228 @@ pub async fn reconcile_detail(
             resolved += 1;
         }
 
-        lines.push(ReconcileLineCtx {
-            text: line,
-            indent,
-            direction,
-            source_label: label,
-            source_class: class,
-            detail,
-        });
+        walked.push((
+            ReconcileLineCtx {
+                text: line,
+                indent,
+                direction,
+                source_label: label,
+                source_class: class,
+                detail,
+            },
+            chosen_idx,
+            current_iface_ctx.clone().unwrap_or_default(),
+        ));
     }
+
+    // Group by attribution.
+    let mut port_groups_map: HashMap<(usize, String), PortGroupCtx> = HashMap::new();
+    let mut svi_groups_map: HashMap<String, SviGroupCtx> = HashMap::new();
+    let mut drift_lines: Vec<DriftLineCtx> = Vec::new();
+    let mut other_lines: Vec<ReconcileLineCtx> = Vec::new();
+
+    // For drift inference: map iface text ("interface Gi1/0/12") →
+    // (module_idx, port_name, service). Built from target_provs by finding
+    // PortInterfaceHeader entries.
+    let mut iface_to_port: HashMap<String, (usize, String, String)> = HashMap::new();
+    for prov in &target_provs {
+        if let ProvSource::PortInterfaceHeader {
+            module_idx,
+            port_name,
+            derived_interface,
+        } = &prov.source
+        {
+            let iface_text = format!("interface {}", derived_interface);
+            let svc = real_config
+                .modules
+                .get(*module_idx)
+                .and_then(|m| m.as_ref())
+                .and_then(|m| m.ports.iter().find(|p| &p.name == port_name))
+                .map(|p| p.service.clone())
+                .unwrap_or_default();
+            iface_to_port.insert(iface_text, (*module_idx, port_name.clone(), svc));
+        }
+    }
+
+    for (line_ctx, chosen_idx, iface_ctx) in walked {
+        // Drift lines first.
+        if line_ctx.direction == "remove" {
+            let bare_cmd = line_ctx
+                .text
+                .trim_start()
+                .strip_prefix("no ")
+                .unwrap_or(&line_ctx.text)
+                .trim()
+                .to_string();
+            let (module_idx, port_name, current_service) = iface_to_port
+                .get(&iface_ctx)
+                .cloned()
+                .unwrap_or((0, String::new(), String::new()));
+            let has_port = !port_name.is_empty();
+            drift_lines.push(DriftLineCtx {
+                full_text: line_ctx.text.clone(),
+                bare_cmd,
+                interface_ctx: iface_ctx.clone(),
+                port_name,
+                module_idx,
+                current_service,
+                has_port,
+            });
+            continue;
+        }
+
+        // Now route resolved adds into per-port or per-SVI groups.
+        if let Some(idx) = chosen_idx {
+            match &target_provs[idx].source {
+                ProvSource::PortService {
+                    module_idx,
+                    port_name,
+                    ..
+                }
+                | ProvSource::PortInterfaceHeader {
+                    module_idx,
+                    port_name,
+                    ..
+                }
+                | ProvSource::PortPrologue {
+                    module_idx,
+                    port_name,
+                    ..
+                }
+                | ProvSource::PortEpilogue {
+                    module_idx,
+                    port_name,
+                    ..
+                } => {
+                    let key = (*module_idx, port_name.clone());
+                    let group = port_groups_map.entry(key.clone()).or_insert_with(|| {
+                        let current_service = real_config
+                            .modules
+                            .get(*module_idx)
+                            .and_then(|m| m.as_ref())
+                            .and_then(|m| m.ports.iter().find(|p| &p.name == port_name))
+                            .map(|p| p.service.clone())
+                            .unwrap_or_default();
+                        let derived_interface = target_provs
+                            .iter()
+                            .find_map(|prov| match &prov.source {
+                                ProvSource::PortInterfaceHeader {
+                                    module_idx: m,
+                                    port_name: pn,
+                                    derived_interface,
+                                } if *m == key.0 && pn == &key.1 => Some(derived_interface.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        let service_options: Vec<ServiceOptionCtx> = available_services
+                            .iter()
+                            .map(|svc| ServiceOptionCtx {
+                                name: svc.clone(),
+                                selected: svc == &current_service,
+                            })
+                            .collect();
+                        let is_previewing = is_preview
+                            && preview_module_idx == *module_idx
+                            && preview_port_name == *port_name;
+                        PortGroupCtx {
+                            module_idx: *module_idx,
+                            port_name: port_name.clone(),
+                            derived_interface,
+                            current_service,
+                            service_options,
+                            lines: Vec::new(),
+                            line_count: 0,
+                            is_previewing,
+                            previewing_service: if is_previewing {
+                                preview_service.clone()
+                            } else {
+                                String::new()
+                            },
+                        }
+                    });
+                    group.lines.push(line_ctx);
+                    continue;
+                }
+                ProvSource::SviService { service, .. } => {
+                    let group = svi_groups_map
+                        .entry(service.clone())
+                        .or_insert_with(|| SviGroupCtx {
+                            service: service.clone(),
+                            lines: Vec::new(),
+                            line_count: 0,
+                        });
+                    group.lines.push(line_ctx);
+                    continue;
+                }
+                _ => {
+                    other_lines.push(line_ctx);
+                    continue;
+                }
+            }
+        }
+        other_lines.push(line_ctx);
+    }
+
+    // Finalize port groups: compute line_count and sort.
+    let mut port_groups: Vec<PortGroupCtx> = port_groups_map
+        .into_values()
+        .map(|mut g| {
+            g.line_count = g.lines.len();
+            g
+        })
+        .collect();
+    port_groups.sort_by(|a, b| {
+        a.module_idx
+            .cmp(&b.module_idx)
+            .then_with(|| crate::routes::reconcile::natural_compare_port(&a.port_name, &b.port_name))
+    });
+
+    let mut svi_groups: Vec<SviGroupCtx> = svi_groups_map
+        .into_values()
+        .map(|mut g| {
+            g.line_count = g.lines.len();
+            g
+        })
+        .collect();
+    svi_groups.sort_by(|a, b| a.service.cmp(&b.service));
 
     let device_name = lookup_logical_device_name(&cfggen_base, &name);
     let hostname = lookup_hostname(&state, &cfggen_base, &name).await;
+
+    let preview_banner = if is_preview {
+        format!(
+            "Previewing: port {} on service {} (not yet committed)",
+            preview_port_name, preview_service
+        )
+    } else {
+        String::new()
+    };
 
     let ctx = ReconcileCtx {
         name: name.clone(),
         device_name,
         hostname,
-        has_delta: !lines.is_empty(),
+        has_delta: !port_groups.is_empty()
+            || !svi_groups.is_empty()
+            || !drift_lines.is_empty()
+            || !other_lines.is_empty(),
         affected_services: affected_services_set.len(),
         resolved_count: resolved,
         unresolved_count: unresolved,
-        total_count: lines.len(),
-        lines,
+        total_count: resolved + unresolved,
+        is_preview,
+        preview_banner,
+        preview_module_idx,
+        preview_port_name,
+        preview_service,
+        has_port_groups: !port_groups.is_empty(),
+        port_groups,
+        has_svi_groups: !svi_groups.is_empty(),
+        svi_groups,
+        has_drift_lines: !drift_lines.is_empty(),
+        drift_lines,
+        has_other_lines: !other_lines.is_empty(),
+        other_lines,
     };
 
     let title = format!("Reconcile: {name}");
@@ -277,15 +618,178 @@ pub async fn reconcile_detail(
     Html(html).into_response()
 }
 
+// ── Handler: POST commit a port service swap ─────────────────────────────────
+
+pub async fn swap_service(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<SwapForm>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    // Locate the device JSON (flat or directory layout).
+    let flat = cfggen_base.join("logical-devices").join(format!("{}.json", name));
+    let dir = cfggen_base.join("logical-devices").join(&name).join("config.json");
+    let json_path = if flat.exists() {
+        flat
+    } else if dir.exists() {
+        dir
+    } else {
+        return message(
+            &state,
+            "Device not found",
+            &format!("No logical-device JSON for '{name}'"),
+            Some(("/diff", "Back")),
+        );
+    };
+
+    let content = match std::fs::read_to_string(&json_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(path = %json_path.display(), error = %e, "Failed to read device JSON");
+            return message(&state, "I/O error", &format!("{e}"), Some(("/diff", "Back")));
+        }
+    };
+    let mut raw_json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(path = %json_path.display(), error = %e, "Invalid JSON");
+            return message(&state, "JSON parse error", &format!("{e}"), Some(("/diff", "Back")));
+        }
+    };
+
+    // Mutate modules[module_idx].ports[?].service.
+    let mut applied = false;
+    if let Some(modules) = raw_json.get_mut("modules").and_then(|v| v.as_array_mut()) {
+        if let Some(module) = modules.get_mut(form.module_idx) {
+            if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
+                for port in ports {
+                    if port.get("name").and_then(|v| v.as_str()) == Some(form.port_name.as_str()) {
+                        if let Some(obj) = port.as_object_mut() {
+                            obj.insert(
+                                "service".to_string(),
+                                serde_json::Value::String(form.service.clone()),
+                            );
+                            applied = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !applied {
+        return message(
+            &state,
+            "Swap failed",
+            &format!(
+                "Could not locate module[{}].ports[name={}] in {}",
+                form.module_idx,
+                form.port_name,
+                json_path.display()
+            ),
+            Some(("/diff", "Back")),
+        );
+    }
+
+    let new_content = match serde_json::to_string_pretty(&raw_json) {
+        Ok(s) => s,
+        Err(e) => return message(&state, "Serialize error", &format!("{e}"), None),
+    };
+    if let Err(e) = std::fs::write(&json_path, new_content) {
+        warn!(path = %json_path.display(), error = %e, "Failed to write device JSON");
+        return message(&state, "Write failed", &format!("{e}"), None);
+    }
+    info!(
+        device = %name, port = %form.port_name, service = %form.service,
+        "Swapped port service via reconcile"
+    );
+
+    // Recompile target. compile_device_config writes to both preview and
+    // target_configs_path so the /diff page picks it up.
+    if let Err(e) = crate::routes::devices::compile_device_config(&name, &cfggen_base, &state.config) {
+        warn!(error = %e, "Recompile after swap failed");
+    }
+
+    Redirect::to(&format!("/diff/{}/reconcile", name)).into_response()
+}
+
+// ── Handler: POST absorb drift into a service ────────────────────────────────
+
+pub async fn absorb_drift(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<AbsorbForm>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let service_dir = cfggen_base.join("services").join(&form.service);
+    if !service_dir.exists() {
+        return message(
+            &state,
+            "Unknown service",
+            &format!("Service directory not found: {}", service_dir.display()),
+            Some(("/diff", "Back")),
+        );
+    }
+    let port_config = service_dir.join("port-config.txt");
+    let mut content = std::fs::read_to_string(&port_config).unwrap_or_default();
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    // Cisco config sub-mode lines are typically prefixed with a single space
+    // — match that convention so the absorbed line slots into the port block
+    // alongside the existing entries.
+    let cmd = form.command.trim();
+    let absorbed = if cmd.starts_with(' ') {
+        cmd.to_string()
+    } else {
+        format!(" {cmd}")
+    };
+    content.push_str(&absorbed);
+    content.push('\n');
+
+    if let Err(e) = std::fs::write(&port_config, content) {
+        warn!(path = %port_config.display(), error = %e, "Failed to write port-config");
+        return message(&state, "Write failed", &format!("{e}"), None);
+    }
+    info!(
+        device = %name, service = %form.service, cmd = %cmd,
+        "Absorbed drift command into service"
+    );
+
+    if let Err(e) = crate::routes::devices::compile_device_config(&name, &cfggen_base, &state.config) {
+        warn!(error = %e, "Recompile after absorb failed");
+    }
+
+    Redirect::to(&format!("/diff/{}/reconcile", name)).into_response()
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Normalize the compiled config (drop blanks / trailing `end`) and filter
-/// the provenance vector in lockstep so they stay aligned line-for-line.
+fn load_available_services(cfggen_base: &std::path::Path) -> Vec<String> {
+    let services_dir = cfggen_base.join("services");
+    let mut services = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&services_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                services.push(name.to_string());
+            }
+        }
+    }
+    services.sort();
+    services
+}
+
 fn normalize_with_provs(text: &str, provs: &[LineProv]) -> (String, Vec<LineProv>) {
     let raw_lines: Vec<&str> = text.lines().collect();
     if raw_lines.len() != provs.len() {
-        // Shouldn't happen — compile_device_traced guarantees alignment.
-        // Fall back to a coarse normalize without provs.
         let normalized = aycfgapply::normalize::normalize_target_config(text);
         let blank_provs: Vec<LineProv> = normalized
             .lines()
@@ -298,8 +802,6 @@ fn normalize_with_provs(text: &str, provs: &[LineProv]) -> (String, Vec<LineProv
             .collect();
         return (normalized, blank_provs);
     }
-
-    // Find last non-blank, non-`end` line (mirrors normalize_body).
     let mut end_idx = raw_lines.len();
     let mut saw_end = false;
     for i in (0..raw_lines.len()).rev() {
@@ -316,7 +818,6 @@ fn normalize_with_provs(text: &str, provs: &[LineProv]) -> (String, Vec<LineProv
         end_idx = i + 1;
         break;
     }
-
     let mut out_text = String::new();
     let mut out_provs: Vec<LineProv> = Vec::new();
     for i in 0..end_idx {
@@ -330,23 +831,18 @@ fn normalize_with_provs(text: &str, provs: &[LineProv]) -> (String, Vec<LineProv
         p.text = stripped.to_string();
         out_provs.push(p);
     }
-    // normalize_target_config joins with \n (no trailing newline).
     if out_text.ends_with('\n') {
         out_text.pop();
     }
     (out_text, out_provs)
 }
 
-/// Walk backwards from `idx` looking for the nearest `interface X` line; if
-/// it matches `wanted_iface_line`, return true.
 fn line_is_in_interface_block(provs: &[LineProv], idx: usize, wanted_iface_line: &str) -> bool {
     for i in (0..=idx).rev() {
         let trimmed = provs[i].text.trim();
         if trimmed.starts_with("interface ") {
             return trimmed == wanted_iface_line;
         }
-        // A non-indented line that isn't `interface ...` ends the
-        // sub-mode, so we stop searching.
         if !provs[i].text.starts_with(' ') && !provs[i].text.starts_with('\t') {
             return false;
         }
@@ -354,13 +850,13 @@ fn line_is_in_interface_block(provs: &[LineProv], idx: usize, wanted_iface_line:
     false
 }
 
-/// Map a `ProvSource` to a (display_label, css_class, secondary_detail)
-/// tuple. Kept centralized so the template can stay dumb.
 fn label_for(src: &ProvSource) -> (String, &'static str, String) {
     match src {
-        ProvSource::Template { path, line } => {
-            (format!("template {path}:{line}"), "src-template", path.clone())
-        }
+        ProvSource::Template { path, line } => (
+            format!("template {path}:{line}"),
+            "src-template",
+            path.clone(),
+        ),
         ProvSource::TemplateVarExpanded { path, line } => (
             format!("template {path}:{line} (var-expanded)"),
             "src-template",
@@ -474,12 +970,7 @@ async fn lookup_hostname(state: &AppState, cfggen_base: &std::path::Path, name: 
     "-".to_string()
 }
 
-fn message(
-    state: &AppState,
-    title: &str,
-    body: &str,
-    back: Option<(&str, &str)>,
-) -> Response {
+fn message(state: &AppState, title: &str, body: &str, back: Option<(&str, &str)>) -> Response {
     let html = state
         .templates
         .render_message(title, Some(body), None, back)
@@ -487,8 +978,34 @@ fn message(
     (StatusCode::OK, Html(html)).into_response()
 }
 
+/// Compare port names like "Port5" vs "Port12" numerically when possible
+/// so the grouping section orders ports naturally.
+pub(crate) fn natural_compare_port(a: &str, b: &str) -> std::cmp::Ordering {
+    fn split(s: &str) -> (String, u64) {
+        let mut prefix = String::new();
+        let mut num_str = String::new();
+        for c in s.chars() {
+            if c.is_ascii_digit() {
+                num_str.push(c);
+            } else if num_str.is_empty() {
+                prefix.push(c);
+            } else {
+                num_str.push(c);
+            }
+        }
+        let n = num_str.parse::<u64>().unwrap_or(u64::MAX);
+        (prefix, n)
+    }
+    let (ap, an) = split(a);
+    let (bp, bn) = split(b);
+    ap.cmp(&bp).then_with(|| an.cmp(&bn))
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
-    Router::new().route("/diff/{name}/reconcile", get(reconcile_detail))
+    Router::new()
+        .route("/diff/{name}/reconcile", get(reconcile_detail))
+        .route("/diff/{name}/reconcile/swap", post(swap_service))
+        .route("/diff/{name}/reconcile/absorb", post(absorb_drift))
 }

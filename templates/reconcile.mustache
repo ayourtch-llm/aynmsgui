@@ -77,7 +77,7 @@
     <label>Try alternate service:
       <select name="try_service" class="port-multi-select">
         {{#service_options}}
-        <option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}</option>
+        <option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}{{#is_suggested}} (suggested){{/is_suggested}}</option>
         {{/service_options}}
       </select>
     </label>
@@ -87,17 +87,6 @@
       <input type="checkbox" class="port-multi-include"{{#is_previewing}} checked{{/is_previewing}}> include in multi-preview
     </label>
   </form>
-  {{#has_suggestion}}
-  <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-suggestion-form">
-    <input type="hidden" name="try_module" value="{{module_idx}}">
-    <input type="hidden" name="try_port" value="{{port_name}}">
-    <input type="hidden" name="try_service" value="{{suggested_service}}">
-    <span class="port-group-suggestion">
-      <strong>Import matcher suggests:</strong> <code>{{suggested_service}}</code>
-      <button type="submit">Preview suggestion</button>
-    </span>
-  </form>
-  {{/has_suggestion}}
   {{#has_prologue}}
   <form method="GET" action="/diff/{{name}}/reconcile/fold-prologue" class="port-group-fold-form">
     <input type="hidden" name="service" value="{{current_service}}">

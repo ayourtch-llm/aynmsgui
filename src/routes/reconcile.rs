@@ -178,6 +178,10 @@ struct PendingSwapEntry {
 struct ServiceOptionCtx {
     name: String,
     selected: bool,
+    /// True iff this option is the import matcher's suggestion for the
+    /// port — used to tag it visually in the dropdown so the operator
+    /// knows why the default is what it is.
+    is_suggested: bool,
 }
 
 #[derive(Serialize)]
@@ -833,6 +837,10 @@ pub async fn reconcile_detail(
                             .map(|svc| ServiceOptionCtx {
                                 name: svc.clone(),
                                 selected: svc == &selected_service,
+                                is_suggested: suggestion_for_this
+                                    .as_ref()
+                                    .map(|s| s == svc)
+                                    .unwrap_or(false),
                             })
                             .collect();
                         PortGroupCtx {
@@ -962,6 +970,10 @@ pub async fn reconcile_detail(
                 .map(|svc| ServiceOptionCtx {
                     name: svc.clone(),
                     selected: svc == &selected_service,
+                    is_suggested: suggestion_for_this
+                        .as_ref()
+                        .map(|s| s == svc)
+                        .unwrap_or(false),
                 })
                 .collect();
             port_groups_map.insert(

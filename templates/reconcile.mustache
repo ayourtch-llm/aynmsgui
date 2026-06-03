@@ -233,9 +233,9 @@
       <button type="submit" title="Insert this command into {{splice_template_path}} {{#splice_anchor}}at end of `{{splice_anchor}}`'s block (line {{splice_after_line}}){{/splice_anchor}}{{^splice_anchor}}at the end of file{{/splice_anchor}}">Splice into template</button>
     </form>
     {{/can_splice}}
-    {{#splice_already_at}}
-    <em style="color:#b07000;" title="Splice refused: this exact line already lives in the template at line {{splice_already_at}}, so inserting another copy would corrupt section structure (the bug seen earlier). It's showing as drift because the compile pipeline isn't emitting it — fix that root cause instead.">already in template at line {{splice_already_at}}</em>
-    {{/splice_already_at}}
+    {{#splice_already}}
+    <em style="color:#b07000;" title="Splice refused: this exact line already lives in the template at line {{line}}, so inserting another copy would corrupt section structure (the bug seen earlier). It's showing as drift because the compile pipeline isn't emitting it — fix that root cause instead.">already in template at line {{line}}</em>
+    {{/splice_already}}
   </td>
 </tr>
 {{/drift_unscoped}}

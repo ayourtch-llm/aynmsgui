@@ -418,12 +418,16 @@ struct DriftLineCtx {
     /// The text of the template line we'd insert after (for the button
     /// tooltip). Empty when splicing at end of file.
     splice_anchor: String,
-    /// 1-based line number where this exact line already lives in the
-    /// template (if any). When >0 we suppress the splice button and
-    /// surface "already at line N — fix the template by hand" — the
-    /// fact that this line is still showing as drift despite being in
-    /// the template signals a structural issue worth a human eye.
-    splice_already_at: usize,
+    /// `Some` when this exact line already lives in the template.
+    /// Wrapped in a struct so the mustache section gates correctly
+    /// (Option::None → falsy; Some(struct) → truthy + the inner
+    /// fields are accessible by name).
+    splice_already: Option<SpliceExistingCtx>,
+}
+
+#[derive(Serialize, Clone)]
+struct SpliceExistingCtx {
+    line: usize,
 }
 
 #[derive(Serialize)]
@@ -1004,7 +1008,7 @@ pub async fn reconcile_detail(
                 splice_template_path: String::new(),
                 splice_after_line: 0,
                 splice_anchor: String::new(),
-                splice_already_at: 0,
+                splice_already: None,
             });
             continue;
         }
@@ -1330,7 +1334,9 @@ pub async fn reconcile_detail(
             {
                 d.can_splice = false;
                 d.splice_template_path = template_path_rel.clone();
-                d.splice_already_at = existing_idx + 1;
+                d.splice_already = Some(SpliceExistingCtx {
+                    line: existing_idx + 1,
+                });
                 continue;
             }
 

@@ -87,8 +87,8 @@
     </label>
     <button type="submit">Preview swap</button>
     &nbsp;·&nbsp;
-    <label title="Tick to add this port's swap to a multi-preview batch (uses the dropdown value)">
-      <input type="checkbox" class="port-multi-include"{{#is_previewing}} checked{{/is_previewing}}> include in multi-preview
+    <label title="Tick to add this port's swap to a multi-preview batch (uses the dropdown value). Pre-checked when the matcher found a better-fitting service.">
+      <input type="checkbox" class="port-multi-include"{{#is_previewing}} checked{{/is_previewing}}{{^is_previewing}}{{#has_suggestion}} checked{{/has_suggestion}}{{/is_previewing}}> include in multi-preview
     </label>
   </form>
   {{#has_prologue}}

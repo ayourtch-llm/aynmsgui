@@ -308,6 +308,7 @@ details.svi-group > summary {
     font-size: 0.95em;
 }
 .port-group-form select { margin: 0 6px; min-width: 200px; }
+.port-group-suggestion-form { display: inline; }
 .port-group-suggestion {
     display: inline-block;
     margin-left: 12px;

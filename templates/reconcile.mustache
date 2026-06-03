@@ -61,13 +61,18 @@
       </select>
     </label>
     <button type="submit">Preview swap</button>
-    {{#has_suggestion}}
-    <span class="port-group-suggestion">
-      <strong>Import matcher suggests:</strong> <code>{{suggested_service}}</code> —
-      <button type="submit" name="try_service" value="{{suggested_service}}" formaction="/diff/{{name}}/reconcile">Preview suggestion</button>
-    </span>
-    {{/has_suggestion}}
   </form>
+  {{#has_suggestion}}
+  <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-suggestion-form">
+    <input type="hidden" name="try_module" value="{{module_idx}}">
+    <input type="hidden" name="try_port" value="{{port_name}}">
+    <input type="hidden" name="try_service" value="{{suggested_service}}">
+    <span class="port-group-suggestion">
+      <strong>Import matcher suggests:</strong> <code>{{suggested_service}}</code>
+      <button type="submit">Preview suggestion</button>
+    </span>
+  </form>
+  {{/has_suggestion}}
   <table class="reconcile-table">
     <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
     <tbody>

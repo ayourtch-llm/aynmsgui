@@ -55,6 +55,9 @@ indexmap = { version = "2", features = ["serde"] }
 # HTTP client (for CDP sweep poller)
 reqwest = { version = "0.12", features = ["json"] }
 
+# Text diff (for the side-by-side /diff/{name} view)
+similar = "2"
+
 # ay* crate dependencies
 aycallhome = { path = "../aycallhome" }
 ayciam = { path = "../ayciam" }

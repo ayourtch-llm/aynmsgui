@@ -68,6 +68,25 @@ pub struct DiffDetailView {
     pub delta: String,
     pub target_config: String,
     pub current_config: String,
+    /// Side-by-side rendering: every line, paired between the current
+    /// (left) and target (right) configs, with `kind` ∈
+    /// {"equal", "modify", "delete", "insert", "gap"}. Empty when
+    /// either side is empty so the template can show a "no current
+    /// retrieved yet" placeholder instead.
+    pub diff_rows: Vec<DiffRow>,
+    pub has_diff_rows: bool,
+    pub equal_count: usize,
+    pub change_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct DiffRow {
+    pub left: String,
+    pub right: String,
+    /// Empty string when there's no line number (gap on that side).
+    pub left_no: String,
+    pub right_no: String,
+    pub kind: &'static str,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -343,12 +362,20 @@ pub async fn diff_detail(
         })
         .unwrap_or_else(|| "-".to_string());
 
+    let (diff_rows, equal_count, change_count) =
+        compute_side_by_side(&current_config, &target_config);
+    let has_diff_rows = !diff_rows.is_empty() && (!current_config.is_empty() || !target_config.is_empty());
+
     let view = DiffDetailView {
         name: name.clone(),
         device_name,
         delta,
         target_config,
         current_config,
+        diff_rows,
+        has_diff_rows,
+        equal_count,
+        change_count,
     };
 
     let title = format!("Config Diff: {name}");
@@ -357,6 +384,93 @@ pub async fn diff_detail(
         .render_page(&state.templates.diff_detail, &title, "", &view)
         .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
     Html(html).into_response()
+}
+
+// ── Side-by-side diff computation ────────────────────────────────────────────
+
+/// Build a paired list of rows for the side-by-side view. Equal lines
+/// occupy both sides at the same row; deletions/insertions are paired
+/// up when adjacent (so back-to-back `delete X` / `insert Y` becomes a
+/// single "modify" row), and lone deletes/inserts become rows with a
+/// gap on the opposite side.
+///
+/// Returns (rows, equal_count, change_count).
+fn compute_side_by_side(current: &str, target: &str) -> (Vec<DiffRow>, usize, usize) {
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_lines(current, target);
+    let changes: Vec<_> = diff
+        .iter_all_changes()
+        .map(|c| (c.tag(), c.old_index(), c.new_index(), c.value().to_string()))
+        .collect();
+
+    let mut rows: Vec<DiffRow> = Vec::new();
+    let mut equal_count = 0usize;
+    let mut change_count = 0usize;
+    let mut i = 0;
+    while i < changes.len() {
+        match changes[i].0 {
+            ChangeTag::Equal => {
+                let (_, oi, ni, ref v) = changes[i];
+                rows.push(DiffRow {
+                    left: trim_trailing_newline(v).to_string(),
+                    right: trim_trailing_newline(v).to_string(),
+                    left_no: oi.map(|n| (n + 1).to_string()).unwrap_or_default(),
+                    right_no: ni.map(|n| (n + 1).to_string()).unwrap_or_default(),
+                    kind: "equal",
+                });
+                equal_count += 1;
+                i += 1;
+            }
+            ChangeTag::Delete | ChangeTag::Insert => {
+                // Collect run of deletes then run of inserts so adjacent
+                // pairs can be shown side-by-side as "modify" rows.
+                let mut deletes: Vec<(Option<usize>, String)> = Vec::new();
+                while i < changes.len() && changes[i].0 == ChangeTag::Delete {
+                    let (_, oi, _, ref v) = changes[i];
+                    deletes.push((oi, trim_trailing_newline(v).to_string()));
+                    i += 1;
+                }
+                let mut inserts: Vec<(Option<usize>, String)> = Vec::new();
+                while i < changes.len() && changes[i].0 == ChangeTag::Insert {
+                    let (_, _, ni, ref v) = changes[i];
+                    inserts.push((ni, trim_trailing_newline(v).to_string()));
+                    i += 1;
+                }
+                let max = deletes.len().max(inserts.len());
+                for k in 0..max {
+                    let left = deletes.get(k).cloned();
+                    let right = inserts.get(k).cloned();
+                    let (left_text, left_no) = left
+                        .map(|(oi, v)| (v, oi.map(|n| (n + 1).to_string()).unwrap_or_default()))
+                        .unwrap_or((String::new(), String::new()));
+                    let (right_text, right_no) = right
+                        .map(|(ni, v)| (v, ni.map(|n| (n + 1).to_string()).unwrap_or_default()))
+                        .unwrap_or((String::new(), String::new()));
+                    let kind = if !left_text.is_empty() && !right_text.is_empty() {
+                        "modify"
+                    } else if !left_text.is_empty() {
+                        "delete"
+                    } else {
+                        "insert"
+                    };
+                    rows.push(DiffRow {
+                        left: left_text,
+                        right: right_text,
+                        left_no,
+                        right_no,
+                        kind,
+                    });
+                    change_count += 1;
+                }
+            }
+        }
+    }
+    (rows, equal_count, change_count)
+}
+
+fn trim_trailing_newline(s: &str) -> &str {
+    s.strip_suffix('\n').unwrap_or(s)
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────

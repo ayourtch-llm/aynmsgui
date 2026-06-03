@@ -1,8 +1,56 @@
-<h1>Config Diff: {{name}}</h1>
-<p>Logical Device: <strong>{{device_name}}</strong></p>
-<h2>Delta (commands to apply)</h2>
-<pre>{{delta}}</pre>
-<h2>Target Config</h2>
-<pre>{{target_config}}</pre>
-<h2>Current Config</h2>
-<pre>{{current_config}}</pre>
+<h1 class="list-page-heading">Config Diff: {{name}}</h1>
+<p>
+  <strong>Logical Device:</strong> {{device_name}}
+  &nbsp;|&nbsp;
+  <a href="/diff">← Back to overview</a>
+  &nbsp;·&nbsp;
+  <a href="/diff/{{name}}/reconcile">Reconcile →</a>
+</p>
+
+{{#has_diff_rows}}
+<p style="color:#666; font-size:0.9em; margin: 8px 0;">
+  Side-by-side comparison · <strong>current</strong> (device) on the left,
+  <strong>target</strong> (compiled) on the right ·
+  <span style="color:#1b5e20;">{{equal_count}} unchanged</span> ·
+  <span style="color:#c0392b;">{{change_count}} changed</span>
+</p>
+<div class="diff-sxs-wrap">
+<table class="diff-sxs">
+<colgroup>
+  <col class="diff-sxs-no"><col class="diff-sxs-line">
+  <col class="diff-sxs-no"><col class="diff-sxs-line">
+</colgroup>
+<thead>
+<tr>
+  <th colspan="2">Current (device)</th>
+  <th colspan="2">Target (compiled)</th>
+</tr>
+</thead>
+<tbody>
+{{#diff_rows}}
+<tr class="diff-{{kind}}">
+  <td class="diff-sxs-no">{{left_no}}</td>
+  <td class="diff-sxs-line"><pre>{{left}}</pre></td>
+  <td class="diff-sxs-no">{{right_no}}</td>
+  <td class="diff-sxs-line"><pre>{{right}}</pre></td>
+</tr>
+{{/diff_rows}}
+</tbody>
+</table>
+</div>
+{{/has_diff_rows}}
+
+<details style="margin-top: 18px;">
+  <summary><strong>Delta (commands to apply to current to match target)</strong></summary>
+  <pre>{{delta}}</pre>
+</details>
+
+<details>
+  <summary><strong>Full target config</strong></summary>
+  <pre>{{target_config}}</pre>
+</details>
+
+<details>
+  <summary><strong>Full current config</strong></summary>
+  <pre>{{current_config}}</pre>
+</details>

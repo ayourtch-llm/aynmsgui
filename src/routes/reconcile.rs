@@ -163,6 +163,13 @@ struct ReconcileLineCtx {
     source_label: String,
     source_class: &'static str,
     detail: String,
+    /// Populated when direction == "remove": the bare command on the
+    /// device (what would be appended to a service's port-config.txt
+    /// when the operator absorbs this line). Empty for adds.
+    bare_cmd: String,
+    /// Populated when direction == "remove": the `no ...` form
+    /// aycicdiff would emit in the textual delta. Empty for adds.
+    negation_text: String,
 }
 
 #[derive(Serialize)]
@@ -250,22 +257,6 @@ struct SviGroupCtx {
     line_count: usize,
 }
 
-#[derive(Serialize)]
-struct DriftPortGroupCtx {
-    interface_ctx: String,
-    port_name: String,
-    module_idx: usize,
-    current_service: String,
-    /// True when the import matcher found a service whose body matches
-    /// this port's device-side body. Shows a single "Swap port to <svc>"
-    /// button at the top of the group — collapses every drift line in
-    /// one click rather than absorbing them one at a time.
-    has_suggestion: bool,
-    suggested_service: String,
-    lines: Vec<DriftLineCtx>,
-    line_count: usize,
-}
-
 #[derive(Serialize, Clone)]
 struct DriftLineCtx {
     /// Full delta line, with the leading "no " preserved.
@@ -330,14 +321,11 @@ struct ReconcileCtx {
     has_port_groups: bool,
     svi_groups: Vec<SviGroupCtx>,
     has_svi_groups: bool,
-    /// Drift lines grouped by the port they sit under. Each group
-    /// surfaces the matcher's suggested swap once at the top + the
-    /// per-line absorb actions.
-    drift_port_groups: Vec<DriftPortGroupCtx>,
-    has_drift_port_groups: bool,
-    /// Drift lines that sit outside any interface block (top-level
-    /// commands the device has but the template doesn't). These get
-    /// the splice-into-template action.
+    /// Drift lines that sit outside any JSON-driven interface (top-
+    /// level commands the device has but the template doesn't). Per-
+    /// port drift now lives inline in each port_group's `lines` Vec
+    /// as a remove-direction ReconcileLineCtx, so the panel renders
+    /// it as a unified-diff alongside the adds.
     drift_unscoped: Vec<DriftLineCtx>,
     has_drift_unscoped: bool,
     other_lines: Vec<ReconcileLineCtx>,
@@ -726,6 +714,18 @@ pub async fn reconcile_detail(
                     resolved += 1;
                 }
 
+                // For removes, populate the absorb-action data inline
+                // so the line can be rendered + acted on directly in
+                // its port panel (no separate drift-only data path).
+                let (bare_cmd, negation_text) = if is_remove {
+                    let bare = text.trim().to_string();
+                    let neg = aycicdiff::serialize::negation::negate_command_with_rules(
+                        &bare, &rules,
+                    );
+                    (bare, neg)
+                } else {
+                    (String::new(), String::new())
+                };
                 walked.push((
                     ReconcileLineCtx {
                         text: display_text,
@@ -734,6 +734,8 @@ pub async fn reconcile_detail(
                         source_label: label,
                         source_class: class,
                         detail,
+                        bare_cmd,
+                        negation_text,
                     },
                     chosen_idx,
                     iface_ctx,
@@ -797,10 +799,15 @@ pub async fn reconcile_detail(
     }
 
     for (line_ctx, _chosen_idx, iface_ctx) in walked {
-        if line_ctx.direction == "remove" {
-            let bare_cmd = line_ctx.text.trim().to_string();
-            let negation_emitted =
-                aycicdiff::serialize::negation::negate_command_with_rules(&bare_cmd, &rules);
+        // Top-level drift (no interface context, or under a non-JSON
+        // interface like a template-baked one or an SVI) becomes a
+        // standalone drift_unscoped row — those use the splice-into-
+        // template flow rather than the per-port absorb/swap flow.
+        if line_ctx.direction == "remove"
+            && !matches!(iface_kinds.get(&iface_ctx), Some(IfaceKind::JsonPort { .. }))
+        {
+            let bare_cmd = line_ctx.bare_cmd.clone();
+            let negation_emitted = line_ctx.negation_text.clone();
             let (module_idx, port_name, current_service) = iface_to_port
                 .get(&iface_ctx)
                 .cloned()
@@ -814,8 +821,6 @@ pub async fn reconcile_detail(
                 module_idx,
                 current_service,
                 has_port,
-                // Filled in after the port_groups loop runs (we need
-                // the matcher result first).
                 suggested_service: String::new(),
                 has_suggestion: false,
                 can_splice: false,
@@ -826,10 +831,10 @@ pub async fn reconcile_detail(
             continue;
         }
 
-        // Route adds by the *interface* that owns them (from iface_ctx),
-        // not by the line's own provenance. This puts per-port changes
-        // under their interface regardless of whether the interface
-        // comes from the device JSON or the .conf template.
+        // Route adds AND per-port removes by interface (preserving the
+        // walker's order), so adds and drift sit side-by-side in each
+        // port panel as an inline diff. Top-level removes went to
+        // drift_unscoped above.
         match iface_kinds.get(&iface_ctx) {
             Some(IfaceKind::JsonPort {
                 module_idx,
@@ -965,92 +970,9 @@ pub async fn reconcile_detail(
     // suggestion for the swap dropdown.
     let current_port_bodies = parse_interface_bodies(&current_tree);
 
-    // Drift-only ports (where every delta line was a Remove, nothing
-    // landed in port_groups_map during the events loop) still need a
-    // group so the matcher can run and the swap suggestion surfaces.
-    // Most common case: device has just a description difference vs
-    // target — the entire delta for that port is a single drift line,
-    // but a different service would zero it out.
-    for d in &drift_lines {
-        if d.interface_ctx.is_empty() {
-            continue;
-        }
-        if port_groups_map.contains_key(&d.interface_ctx) {
-            continue;
-        }
-        if let Some(IfaceKind::JsonPort {
-            module_idx,
-            port_name,
-            derived_interface,
-        }) = iface_kinds.get(&d.interface_ctx)
-        {
-            let port_assign = real_config
-                .modules
-                .get(*module_idx)
-                .and_then(|m| m.as_ref())
-                .and_then(|m| m.ports.iter().find(|p| &p.name == port_name));
-            let current_service = port_assign
-                .map(|p| p.service.clone())
-                .unwrap_or_default();
-            let prologue_text = port_assign
-                .and_then(|p| p.prologue.clone())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_default();
-            let has_prologue = !prologue_text.is_empty();
-            let preview_for_this = applied_swaps
-                .iter()
-                .find(|(m, p, _)| m == module_idx && p == port_name)
-                .map(|(_, _, s)| s.clone());
-            let is_previewing = preview_for_this.is_some();
-            let suggestion_for_this = port_suggestions
-                .get(&format!("interface {}", derived_interface))
-                .cloned()
-                .filter(|s| !s.is_empty() && s != &current_service);
-            let selected_service = preview_for_this
-                .clone()
-                .or_else(|| suggestion_for_this.clone())
-                .unwrap_or_else(|| current_service.clone());
-            let service_options: Vec<ServiceOptionCtx> = available_services
-                .iter()
-                .map(|svc| {
-                    let is_suggested = suggestion_for_this
-                        .as_ref()
-                        .map(|s| s == svc)
-                        .unwrap_or(false);
-                    let is_current = svc == &current_service;
-                    ServiceOptionCtx {
-                        name: svc.clone(),
-                        selected: svc == &selected_service,
-                        is_suggested,
-                        is_current,
-                        prefix: service_option_prefix(is_current, is_suggested),
-                    }
-                })
-                .collect();
-            port_groups_map.insert(
-                d.interface_ctx.clone(),
-                PortGroupCtx {
-                    module_idx: *module_idx,
-                    port_name: port_name.clone(),
-                    derived_interface: derived_interface.clone(),
-                    current_service,
-                    service_options,
-                    lines: Vec::new(),
-                    line_count: 0,
-                    is_json_port: true,
-                    is_template_port: false,
-                    template_path: String::new(),
-                    template_line: 0,
-                    is_previewing,
-                    previewing_service: preview_for_this.unwrap_or_default(),
-                    suggested_service: suggestion_for_this.clone().unwrap_or_default(),
-                    has_suggestion: suggestion_for_this.is_some(),
-                    has_prologue,
-                    prologue_text,
-                },
-            );
-        }
-    }
+    // Per-port drift now lands in port_groups via the walked loop
+    // (as a remove-direction ReconcileLineCtx), so a drift-only port
+    // automatically has a group entry — no separate backfill needed.
 
     // Finalize port groups: compute line_count and sort. Matcher
     // suggestion is now populated inline at construction time so the
@@ -1077,31 +999,11 @@ pub async fn reconcile_detail(
             .then_with(|| natural_compare_port(&a.derived_interface, &b.derived_interface))
     });
 
-    // Backfill drift_lines with the matcher's suggestion per port.
-    // Operators reading the drift section then see "swap this port"
-    // alongside (or instead of) "absorb the line into the assigned
-    // service" — usually the swap is the right answer.
-    let mut iface_to_suggestion: HashMap<String, String> = HashMap::new();
-    for g in &port_groups {
-        if g.has_suggestion {
-            iface_to_suggestion.insert(
-                format!("interface {}", g.derived_interface),
-                g.suggested_service.clone(),
-            );
-        }
-    }
-    for d in &mut drift_lines {
-        if let Some(svc) = iface_to_suggestion.get(&d.interface_ctx) {
-            if !svc.is_empty() && svc != &d.current_service {
-                d.suggested_service = svc.clone();
-                d.has_suggestion = true;
-            }
-        }
-    }
-
     // For top-level drift (lines on the device but not in target,
-    // outside any interface block), offer a "splice into template"
-    // action. The template_path is the .conf this device compiles
+    // outside any interface block — drift_lines only contains those
+    // now; per-port drift sits inside its port group as a remove
+    // line, rendered inline-diff with the port's adds), offer a
+    // "splice into template" action. The template_path is the .conf this device compiles
     // through; the insertion position is computed by walking backwards
     // from the drift line in the device config until we find a line
     // that also appears in the template — that anchor's template line
@@ -1165,42 +1067,11 @@ pub async fn reconcile_detail(
         .collect();
     svi_groups.sort_by(|a, b| a.service.cmp(&b.service));
 
-    // Group drift_lines by their port. Lines with no port context land
-    // in drift_unscoped (top-level commands → splice-into-template flow).
-    let mut drift_port_groups_map: HashMap<String, DriftPortGroupCtx> = HashMap::new();
-    let mut drift_unscoped: Vec<DriftLineCtx> = Vec::new();
-    for d in drift_lines.into_iter() {
-        if !d.has_port || d.interface_ctx.is_empty() {
-            drift_unscoped.push(d);
-            continue;
-        }
-        let key = d.interface_ctx.clone();
-        let entry = drift_port_groups_map
-            .entry(key.clone())
-            .or_insert_with(|| DriftPortGroupCtx {
-                interface_ctx: d.interface_ctx.clone(),
-                port_name: d.port_name.clone(),
-                module_idx: d.module_idx,
-                current_service: d.current_service.clone(),
-                has_suggestion: d.has_suggestion,
-                suggested_service: d.suggested_service.clone(),
-                lines: Vec::new(),
-                line_count: 0,
-            });
-        entry.lines.push(d);
-    }
-    let mut drift_port_groups: Vec<DriftPortGroupCtx> = drift_port_groups_map
-        .into_values()
-        .map(|mut g| {
-            g.line_count = g.lines.len();
-            g
-        })
-        .collect();
-    drift_port_groups.sort_by(|a, b| {
-        a.module_idx
-            .cmp(&b.module_idx)
-            .then_with(|| natural_compare_port(&a.port_name, &b.port_name))
-    });
+    // Per-port drift already sits inside its port group as a "remove"
+    // ReconcileLineCtx (preserving walk order alongside the adds), so
+    // all that's left in drift_lines is top-level drift that goes
+    // through the splice-into-template flow.
+    let drift_unscoped: Vec<DriftLineCtx> = drift_lines;
 
     let device_name = lookup_logical_device_name(&cfggen_base, &name);
     let hostname = lookup_hostname(&state, &cfggen_base, &name).await;
@@ -1238,7 +1109,6 @@ pub async fn reconcile_detail(
         hostname,
         has_delta: !port_groups.is_empty()
             || !svi_groups.is_empty()
-            || !drift_port_groups.is_empty()
             || !drift_unscoped.is_empty()
             || !other_lines.is_empty(),
         affected_services: affected_services_set.len(),
@@ -1256,8 +1126,6 @@ pub async fn reconcile_detail(
         port_groups,
         has_svi_groups: !svi_groups.is_empty(),
         svi_groups,
-        has_drift_port_groups: !drift_port_groups.is_empty(),
-        drift_port_groups,
         has_drift_unscoped: !drift_unscoped.is_empty(),
         drift_unscoped,
         has_other_lines: !other_lines.is_empty(),

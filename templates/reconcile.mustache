@@ -49,8 +49,12 @@
 {{#has_port_groups}}
 <h2>Per-port changes</h2>
 <p style="color:#666; font-size:0.9em;">
-  Pick a different service from the dropdown to see what the diff would look like with that
-  service in place. Nothing is written to disk until you click <em>Commit swap</em>.
+  Each panel is an inline diff for one interface: <span style="color:#1b5e20;">green rows</span>
+  are lines the target wants to apply to the device, <span style="color:#b71c1c;">red rows</span>
+  are lines the device has running that the target would remove (drift). Pick a different
+  service from the dropdown to preview, or hit a row's <em>Absorb</em> button to fold a
+  single drift line into the assigned service. Nothing is written to disk until you click
+  <em>Commit swap</em>.
 </p>
 {{#port_groups}}
 <details class="port-group{{#is_previewing}} previewing{{/is_previewing}}{{#is_template_port}} template-port{{/is_template_port}}" open>
@@ -108,12 +112,25 @@
   </p>
   {{/is_template_port}}
   <table class="reconcile-table">
-    <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
+    <thead><tr><th style="width:60%;">Delta line</th><th>Source / Action</th></tr></thead>
     <tbody>
     {{#lines}}
     <tr class="rec-{{direction}}">
       <td><pre class="rec-line">{{text}}</pre></td>
-      <td><span class="rec-src-badge {{source_class}}">{{source_label}}</span></td>
+      <td>
+        {{#source_label}}
+        <span class="rec-src-badge {{source_class}}">{{source_label}}</span>
+        {{/source_label}}
+        {{#bare_cmd}}
+        <form method="POST" action="/diff/{{name}}/reconcile/absorb" style="display:inline;">
+          <input type="hidden" name="module_idx" value="{{module_idx}}">
+          <input type="hidden" name="port_name" value="{{port_name}}">
+          <input type="hidden" name="service" value="{{current_service}}">
+          <input type="hidden" name="command" value="{{bare_cmd}}">
+          <button type="submit" title="Append this single command to {{current_service}}/port-config.txt. The transition would emit {{negation_text}} to remove it from the device.">Absorb into {{current_service}}</button>
+        </form>
+        {{/bare_cmd}}
+      </td>
     </tr>
     {{/lines}}
     </tbody>
@@ -143,59 +160,6 @@
 </details>
 {{/svi_groups}}
 {{/has_svi_groups}}
-
-{{#has_drift_port_groups}}
-<h2>Drift — per-port</h2>
-<p style="color:#666; font-size:0.9em;">
-  Commands the device has running but the target's services don't include. Grouped by
-  interface so you can fix the whole block in one go — <em>Swap port</em> when the
-  matcher found a better-fitting service (collapses every drift line below in one
-  click), or <em>Absorb</em> a single line into the port's currently-assigned service.
-</p>
-{{#drift_port_groups}}
-<details class="port-group" open>
-  <summary>
-    <strong>{{interface_ctx}}</strong>
-    &nbsp;·&nbsp; <code>{{port_name}}</code>
-    &nbsp;·&nbsp; current service: <code>{{current_service}}</code>
-    &nbsp;·&nbsp; {{line_count}} drift line(s)
-  </summary>
-  {{#has_suggestion}}
-  <p style="margin: 6px 0;">
-    <form method="GET" action="/diff/{{name}}/reconcile" style="display:inline;">
-      <input type="hidden" name="try_module" value="{{module_idx}}">
-      <input type="hidden" name="try_port" value="{{port_name}}">
-      <input type="hidden" name="try_service" value="{{suggested_service}}">
-      <button type="submit" title="The device's body for this port matches {{suggested_service}} exactly. Previewing this swap collapses every drift line below in one go.">Swap port to {{suggested_service}}</button>
-    </form>
-    <span style="color:#666; font-size:0.9em; margin-left:8px;">
-      The device's body matches <code>{{suggested_service}}</code> exactly — one swap clears all {{line_count}} drift line(s) below.
-    </span>
-  </p>
-  {{/has_suggestion}}
-  <table class="reconcile-table">
-    <thead><tr><th>Command on device</th><th>Negation emitted by transition</th><th>Absorb</th></tr></thead>
-    <tbody>
-    {{#lines}}
-    <tr class="rec-remove">
-      <td><pre class="rec-line">{{bare_cmd}}</pre></td>
-      <td><code style="color:#888; font-size:0.85em;">{{full_text}}</code></td>
-      <td>
-        <form method="POST" action="/diff/{{name}}/reconcile/absorb" style="display:inline;">
-          <input type="hidden" name="module_idx" value="{{module_idx}}">
-          <input type="hidden" name="port_name" value="{{port_name}}">
-          <input type="hidden" name="service" value="{{current_service}}">
-          <input type="hidden" name="command" value="{{bare_cmd}}">
-          <button type="submit" title="Append this single command to {{current_service}}/port-config.txt — use when only this one line is missing from the assigned service.">Absorb into {{current_service}}</button>
-        </form>
-      </td>
-    </tr>
-    {{/lines}}
-    </tbody>
-  </table>
-</details>
-{{/drift_port_groups}}
-{{/has_drift_port_groups}}
 
 {{#has_drift_unscoped}}
 <h2>Top-level drift (no interface context)</h2>

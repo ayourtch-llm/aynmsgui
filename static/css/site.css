@@ -198,6 +198,19 @@ tbody tr:nth-child(odd) { background-color: #ffffff; }
 tbody tr:nth-child(even) { background-color: #f0f1f3; }
 tbody tr:hover { background-color: #e3edf7; }
 
+/* Stack-of-N indicator next to the logical device name on /diff. */
+.stack-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    background: #ecf3ff;
+    border: 1px solid #9fb6e0;
+    border-radius: 3px;
+    font-size: 0.78em;
+    color: #224380;
+    font-weight: 600;
+}
+
 /* Diff overview row status: tint the Status cell instead of the whole row
  * so zebra/hover effects still show. The diff_overview table has the
  * Status column at index 4 (Serial · Logical Device · Hostname · Status). */

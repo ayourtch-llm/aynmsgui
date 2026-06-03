@@ -15,7 +15,12 @@
 {{#items}}
 <tr class="{{status_class}}">
   <td><a href="/diff/{{name}}">{{name}}</a></td>
-  <td>{{device_name}}</td>
+  <td>
+    {{device_name}}
+    {{#is_stack}}
+    <span class="stack-badge" title="Stack of {{chassis_count}} chassis: {{chassis_serials}}">stack: {{chassis_count}}</span>
+    {{/is_stack}}
+  </td>
   <td>{{hostname}}</td>
   <td>{{status_text}}</td>
   <td>

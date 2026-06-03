@@ -48,6 +48,17 @@ pub struct DiffOverviewItem {
     /// is disabled in this case — same reason /retrieve disables it.
     pub retrieve_disabled: bool,
     pub retrieve_reason: String,
+    /// True when the logical device's JSON has more than one module with
+    /// a non-empty SKU AND those modules carry distinct serials — i.e. a
+    /// real stack (multiple chassis sharing one config plane). The
+    /// template uses this to render a "stack: N chassis" badge.
+    pub is_stack: bool,
+    /// Number of chassis in the stack (1 for a single switch, ≥2 for a
+    /// stack). Always ≥1 when the device has any real (non-stub) module.
+    pub chassis_count: usize,
+    /// Serials of every non-stub module, comma-separated for the badge
+    /// tooltip. Empty when chassis_count <= 1.
+    pub chassis_serials: String,
 }
 
 /// How many delta lines to embed in the overview preview before
@@ -248,6 +259,40 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             })
             .unwrap_or_else(|| "-".to_string());
 
+        // Stack detection. Walk any matching logical-device's modules and
+        // collect the serials of non-stub entries (those with a non-empty
+        // SKU). When >1 distinct serial → real stack. Single switch with
+        // a stub slot-0 carrying the chassis serial is NOT a stack —
+        // that's just an extraction-time placeholder shared with the
+        // real module.
+        let (is_stack, chassis_count, chassis_serials) = logical_names
+            .and_then(|names| names.first())
+            .and_then(|ln| device_configs.get(ln))
+            .map(|cfg| {
+                let mut serials: Vec<String> = Vec::new();
+                let mut seen_set: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+                if let Some(modules) = cfg.get("modules").and_then(|m| m.as_array()) {
+                    for module in modules {
+                        let sku = module.get("SKU").and_then(|v| v.as_str()).unwrap_or("");
+                        if sku.is_empty() {
+                            continue; // stub
+                        }
+                        if let Some(s) = module
+                            .get("serial")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                        {
+                            if seen_set.insert(s.to_string()) {
+                                serials.push(s.to_string());
+                            }
+                        }
+                    }
+                }
+                (serials.len() > 1, serials.len(), serials.join(", "))
+            })
+            .unwrap_or((false, 0, String::new()));
+
         // Retrieve-button gating: disabled if the device isn't in
         // seen_assets at all, or its last_seen is past the freshness
         // cutoff. The reason is surfaced as a button tooltip.
@@ -277,6 +322,9 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             status_text: if has_diff { "Changes" } else { "No changes" },
             retrieve_disabled,
             retrieve_reason,
+            is_stack,
+            chassis_count,
+            chassis_serials,
         });
     }
     drop(seen);

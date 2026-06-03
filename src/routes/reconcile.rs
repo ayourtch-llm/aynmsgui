@@ -193,6 +193,12 @@ struct PortGroupCtx {
     /// without any disk writes happening during the lookup.
     suggested_service: String,
     has_suggestion: bool,
+    /// If this port's JSON has a non-null `prologue`, the text and a flag
+    /// surface "Fold prologue into <service>" UI. The fold is a global
+    /// operation across every device that uses the same (service,
+    /// prologue) pair — confirmation page enumerates the impact.
+    has_prologue: bool,
+    prologue_text: String,
 }
 
 #[derive(Serialize)]
@@ -270,6 +276,41 @@ pub struct AbsorbForm {
     pub port_name: String,
     pub service: String,
     pub command: String,
+}
+
+#[derive(Deserialize)]
+pub struct FoldQuery {
+    pub service: String,
+    pub prologue: String,
+}
+
+#[derive(Deserialize)]
+pub struct FoldForm {
+    pub service: String,
+    pub prologue: String,
+}
+
+// ── Fold-preview view models ─────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct FoldDeviceCtx {
+    device_name: String,
+    port_count: usize,
+    port_names: String,
+}
+
+#[derive(Serialize)]
+struct FoldPreviewCtx {
+    /// The URL's {name} we came from — used for the "Back to reconcile" link.
+    name: String,
+    service: String,
+    prologue: String,
+    /// Trimmed display version of the prologue (no leading space).
+    prologue_display: String,
+    service_path: String,
+    devices: Vec<FoldDeviceCtx>,
+    total_devices: usize,
+    total_ports: usize,
 }
 
 // ── Override LogicalDeviceSource ──────────────────────────────────────────────
@@ -633,13 +674,19 @@ pub async fn reconcile_detail(
                 } => {
                     let key = (*module_idx, port_name.clone());
                     let group = port_groups_map.entry(key.clone()).or_insert_with(|| {
-                        let current_service = real_config
+                        let port_assign = real_config
                             .modules
                             .get(*module_idx)
                             .and_then(|m| m.as_ref())
-                            .and_then(|m| m.ports.iter().find(|p| &p.name == port_name))
+                            .and_then(|m| m.ports.iter().find(|p| &p.name == port_name));
+                        let current_service = port_assign
                             .map(|p| p.service.clone())
                             .unwrap_or_default();
+                        let prologue_text = port_assign
+                            .and_then(|p| p.prologue.clone())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_default();
+                        let has_prologue = !prologue_text.is_empty();
                         let derived_interface = target_provs
                             .iter()
                             .find_map(|prov| match &prov.source {
@@ -688,6 +735,8 @@ pub async fn reconcile_detail(
                             // the parsed current-config bodies for that).
                             suggested_service: String::new(),
                             has_suggestion: false,
+                            has_prologue,
+                            prologue_text,
                         }
                     });
                     group.lines.push(line_ctx);
@@ -983,7 +1032,264 @@ pub async fn absorb_drift(
     Redirect::to(&format!("/diff/{}/reconcile", name)).into_response()
 }
 
+// ── Handler: GET prologue fold confirmation page ─────────────────────────────
+
+pub async fn fold_prologue_preview(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(q): Query<FoldQuery>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let matches = scan_devices_for_prologue_pair(&cfggen_base, &q.service, &q.prologue);
+    let total_devices = matches.len();
+    let total_ports: usize = matches.iter().map(|(_, ports)| ports.len()).sum();
+    let devices: Vec<FoldDeviceCtx> = matches
+        .into_iter()
+        .map(|(device_name, ports)| FoldDeviceCtx {
+            port_count: ports.len(),
+            port_names: ports.join(", "),
+            device_name,
+        })
+        .collect();
+
+    let service_path = cfggen_base
+        .join("services")
+        .join(&q.service)
+        .join("port-config.txt")
+        .display()
+        .to_string();
+
+    let prologue_display = q.prologue.trim_start().to_string();
+
+    let ctx = FoldPreviewCtx {
+        name: name.clone(),
+        service: q.service,
+        prologue: q.prologue,
+        prologue_display,
+        service_path,
+        devices,
+        total_devices,
+        total_ports,
+    };
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.reconcile_fold_preview,
+            "Fold prologue into service",
+            "",
+            &ctx,
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+// ── Handler: POST execute prologue fold ──────────────────────────────────────
+
+pub async fn fold_prologue_execute(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<FoldForm>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let port_config_path = cfggen_base
+        .join("services")
+        .join(&form.service)
+        .join("port-config.txt");
+    if !port_config_path.exists() {
+        return message(
+            &state,
+            "Unknown service",
+            &format!("Service has no port-config.txt: {}", port_config_path.display()),
+            Some(("/diff", "Back")),
+        );
+    }
+
+    // Step 1: prepend the prologue line to the service's port-config.txt.
+    // We prepend (not append) because Cisco description conventionally
+    // appears at the top of an interface block; the rest of the service
+    // body follows.
+    let existing = std::fs::read_to_string(&port_config_path).unwrap_or_default();
+    let line_to_add = if form.prologue.starts_with(' ') {
+        form.prologue.clone()
+    } else {
+        format!(" {}", form.prologue.trim_start())
+    };
+    let mut new_content = String::new();
+    new_content.push_str(line_to_add.trim_end());
+    new_content.push('\n');
+    new_content.push_str(&existing);
+    if !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    if let Err(e) = std::fs::write(&port_config_path, &new_content) {
+        warn!(path = %port_config_path.display(), error = %e, "Failed to write service port-config.txt");
+        return message(&state, "Write failed", &format!("{e}"), None);
+    }
+
+    // Step 2: walk every device JSON; for each port that uses (service,
+    // prologue) match, set prologue=null. Remember which devices we
+    // touched so we can recompile them afterwards.
+    let matches = scan_devices_for_prologue_pair(&cfggen_base, &form.service, &form.prologue);
+    let touched_devices: Vec<String> = matches.iter().map(|(d, _)| d.clone()).collect();
+
+    for (device_name, _) in &matches {
+        let flat = cfggen_base
+            .join("logical-devices")
+            .join(format!("{}.json", device_name));
+        let dir = cfggen_base
+            .join("logical-devices")
+            .join(device_name)
+            .join("config.json");
+        let json_path = if flat.exists() {
+            flat
+        } else if dir.exists() {
+            dir
+        } else {
+            warn!(device = %device_name, "Device JSON disappeared mid-fold; skipping");
+            continue;
+        };
+        let content = match std::fs::read_to_string(&json_path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(path = %json_path.display(), error = %e, "Failed to read device JSON");
+                continue;
+            }
+        };
+        let mut raw_json: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(path = %json_path.display(), error = %e, "Invalid JSON; skipping");
+                continue;
+            }
+        };
+        if let Some(modules) = raw_json.get_mut("modules").and_then(|v| v.as_array_mut()) {
+            for module in modules {
+                if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
+                    for port in ports {
+                        let svc_matches = port.get("service").and_then(|v| v.as_str())
+                            == Some(form.service.as_str());
+                        let prol_matches = port.get("prologue").and_then(|v| v.as_str())
+                            == Some(form.prologue.as_str());
+                        if svc_matches && prol_matches {
+                            if let Some(obj) = port.as_object_mut() {
+                                obj.insert("prologue".to_string(), serde_json::Value::Null);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let new_content = match serde_json::to_string_pretty(&raw_json) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(error = %e, "Failed to serialize device JSON");
+                continue;
+            }
+        };
+        if let Err(e) = std::fs::write(&json_path, new_content) {
+            warn!(path = %json_path.display(), error = %e, "Failed to write device JSON");
+            continue;
+        }
+    }
+
+    info!(
+        service = %form.service,
+        devices = touched_devices.len(),
+        "Folded prologue into service across devices"
+    );
+
+    // Step 3: recompile every touched device so target_configs/ is up to
+    // date. compile_device_config swallows per-device errors so one bad
+    // device doesn't block the rest.
+    for device_name in &touched_devices {
+        if let Err(e) = crate::routes::devices::compile_device_config(
+            device_name,
+            &cfggen_base,
+            &state.config,
+        ) {
+            warn!(device = %device_name, error = %e, "Recompile after fold failed");
+        }
+    }
+
+    Redirect::to(&format!("/diff/{}/reconcile", name)).into_response()
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Walk every device JSON under `logical-devices/` and return the list of
+/// (device_name, port_names) where any port's (service, prologue) pair
+/// matches the given values. Used by the fold-prologue preview/execute
+/// handlers to show / apply the cross-device impact.
+fn scan_devices_for_prologue_pair(
+    cfggen_base: &std::path::Path,
+    service: &str,
+    prologue: &str,
+) -> Vec<(String, Vec<String>)> {
+    let dir = cfggen_base.join("logical-devices");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let (device_name, json_path) = if path.is_dir() {
+            let n = match path.file_name().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            (n, path.join("config.json"))
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let n = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            (n, path)
+        } else {
+            continue;
+        };
+        if !json_path.exists() {
+            continue;
+        }
+        let content = match std::fs::read_to_string(&json_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let raw: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let mut hits: Vec<String> = Vec::new();
+        if let Some(modules) = raw.get("modules").and_then(|v| v.as_array()) {
+            for module in modules {
+                if let Some(ports) = module.get("ports").and_then(|p| p.as_array()) {
+                    for port in ports {
+                        let svc = port.get("service").and_then(|v| v.as_str());
+                        let prol = port.get("prologue").and_then(|v| v.as_str());
+                        if svc == Some(service) && prol == Some(prologue) {
+                            if let Some(pn) = port.get("name").and_then(|v| v.as_str()) {
+                                hits.push(pn.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !hits.is_empty() {
+            out.push((device_name, hits));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
 
 /// Build the `service_name → port-config.txt content` map the matcher
 /// needs. Reads each service directory once; missing or unreadable
@@ -1271,4 +1577,8 @@ pub fn routes() -> Router<AppState> {
         .route("/diff/{name}/reconcile", get(reconcile_detail))
         .route("/diff/{name}/reconcile/swap", post(swap_service))
         .route("/diff/{name}/reconcile/absorb", post(absorb_drift))
+        .route(
+            "/diff/{name}/reconcile/fold-prologue",
+            get(fold_prologue_preview).post(fold_prologue_execute),
+        )
 }

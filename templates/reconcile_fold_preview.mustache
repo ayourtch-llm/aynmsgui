@@ -1,0 +1,50 @@
+<h1 class="list-page-heading">Fold prologue into service</h1>
+
+<div class="reconcile-summary">
+  <div><strong>Service:</strong> <code>{{service}}</code></div>
+  <div><strong>Service file:</strong> <code>{{service_path}}</code></div>
+  <div><strong>Prologue line:</strong> <code>{{prologue_display}}</code></div>
+</div>
+
+<p>
+  Confirming will:
+</p>
+<ol>
+  <li>Prepend <code>{{prologue_display}}</code> to <code>{{service}}/port-config.txt</code>.</li>
+  <li>Set <code>prologue: null</code> on every port across every device that currently uses
+      this <code>(service, prologue)</code> pair — <strong>{{total_ports}}</strong> ports
+      across <strong>{{total_devices}}</strong> device(s).</li>
+  <li>Recompile each affected device's target config locally. Nothing is sent to live devices
+      until you explicitly run <em>Apply</em> from the diff page.</li>
+</ol>
+
+{{#total_devices}}
+<h2>Affected devices</h2>
+<table class="reconcile-table">
+<thead><tr><th>Device</th><th>Ports affected</th><th>Port names</th></tr></thead>
+<tbody>
+{{#devices}}
+<tr>
+  <td><a href="/diff/{{device_name}}/reconcile">{{device_name}}</a></td>
+  <td>{{port_count}}</td>
+  <td><code>{{port_names}}</code></td>
+</tr>
+{{/devices}}
+</tbody>
+</table>
+{{/total_devices}}
+
+{{^total_devices}}
+<p style="color:#888;">
+  <em>No devices currently pair this service with this prologue. Nothing to do.</em>
+</p>
+{{/total_devices}}
+
+<p style="margin-top:16px;">
+  <form method="POST" action="/diff/{{name}}/reconcile/fold-prologue" style="display:inline;">
+    <input type="hidden" name="service" value="{{service}}">
+    <input type="hidden" name="prologue" value="{{prologue}}">
+    <button type="submit"{{^total_devices}} disabled{{/total_devices}}>Confirm fold</button>
+  </form>
+  <a href="/diff/{{name}}/reconcile" style="margin-left:12px;">Cancel</a>
+</p>

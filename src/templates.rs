@@ -40,6 +40,7 @@ pub struct Templates {
     pub device_detail: mustache::Template,
     pub topology: mustache::Template,
     pub reconcile: mustache::Template,
+    pub reconcile_fold_preview: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -76,6 +77,7 @@ impl Templates {
             device_detail: load("device_detail")?,
             topology: load("topology")?,
             reconcile: load("reconcile")?,
+            reconcile_fold_preview: load("reconcile_fold_preview")?,
             message: load("message")?,
         })
     }

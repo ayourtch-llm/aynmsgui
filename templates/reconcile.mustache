@@ -73,6 +73,16 @@
     </span>
   </form>
   {{/has_suggestion}}
+  {{#has_prologue}}
+  <form method="GET" action="/diff/{{name}}/reconcile/fold-prologue" class="port-group-fold-form">
+    <input type="hidden" name="service" value="{{current_service}}">
+    <input type="hidden" name="prologue" value="{{prologue_text}}">
+    <span class="port-group-fold">
+      <strong>Per-port prologue:</strong> <code>{{prologue_text}}</code>
+      <button type="submit" title="Move this line into the service's port-config.txt so every port using this (service, prologue) pair on any device drops its per-port prologue">Fold into {{current_service}} …</button>
+    </span>
+  </form>
+  {{/has_prologue}}
   <table class="reconcile-table">
     <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
     <tbody>

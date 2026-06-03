@@ -102,16 +102,20 @@
 {{#has_drift_lines}}
 <h2>Drift — currently on device but not in target</h2>
 <p style="color:#666; font-size:0.9em;">
-  These commands are running on the device but the template would remove them. Click
+  These are commands that the device actually has running but the target config doesn't
+  include — so the next apply would negate them. (The transition generator emits each one
+  prefixed with <code>no</code>; we show the underlying command here so absorbing into a
+  service is byte-for-byte the same as what gets written.) Click
   <em>Absorb into service</em> to append the command to the inferred port's service so
-  the template stops trying to remove it.
+  the target keeps it and the drift disappears.
 </p>
 <table class="reconcile-table">
-<thead><tr><th>Delta line</th><th>Inferred port → service</th><th>Action</th></tr></thead>
+<thead><tr><th>Command on device</th><th>Negation emitted by transition</th><th>Inferred port → service</th><th>Action</th></tr></thead>
 <tbody>
 {{#drift_lines}}
 <tr class="rec-remove">
-  <td><pre class="rec-line">{{full_text}}</pre></td>
+  <td><pre class="rec-line">{{bare_cmd}}</pre></td>
+  <td><code style="color:#888; font-size:0.85em;">{{full_text}}</code></td>
   <td>
     {{#has_port}}
     <code>{{port_name}}</code> · <code>{{current_service}}</code>

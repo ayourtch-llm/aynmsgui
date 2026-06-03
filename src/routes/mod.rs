@@ -10,6 +10,7 @@ pub mod import;
 pub mod login;
 pub mod operations;
 pub mod provision;
+pub mod reconcile;
 pub mod retrieve;
 pub mod settings;
 pub mod software;
@@ -148,6 +149,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(extract::routes())
         .merge(extract_sw::routes())
         .merge(apply::routes())
+        .merge(reconcile::routes())
         .merge(retrieve::routes())
         .merge(operations::routes())
         .merge(settings::routes())

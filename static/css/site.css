@@ -231,6 +231,50 @@ tr.no-diff td:nth-child(4) { color: #95a5a6; }
     color: #555;
 }
 
+/* /diff/{name}/reconcile: per-delta-line provenance table. Each row pairs
+ * a delta line with a colored badge naming the source it came from in
+ * the target. The badge colors hint at the kind of change — services are
+ * the bulk, structural/template are usually fine, unknown stands out. */
+.reconcile-summary {
+    margin: 8px 0;
+    padding: 6px 10px;
+    background: #fafafa;
+    border-left: 4px solid #1a5276;
+    font-size: 0.95em;
+}
+.reconcile-table { font-size: 0.92em; }
+.reconcile-table td { vertical-align: top; }
+.reconcile-table pre.rec-line {
+    margin: 0;
+    padding: 2px 6px;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 3px;
+    font-size: 0.95em;
+}
+tr.rec-remove td pre.rec-line { color: #b71c1c; background: #fff5f5; }
+tr.rec-add    td pre.rec-line { color: #1b5e20; background: #f5fbf5; }
+
+.rec-src-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.85em;
+    font-family: Menlo, Consolas, monospace;
+    border: 1px solid transparent;
+}
+.rec-src-badge.src-service-port { background: #fff7e0; border-color: #f0c060; color: #6d4c00; }
+.rec-src-badge.src-svi          { background: #ecf3ff; border-color: #9fb6e0; color: #224380; }
+.rec-src-badge.src-template     { background: #efefef; border-color: #cfcfcf; color: #333; }
+.rec-src-badge.src-element      { background: #f0e8ff; border-color: #b9a3e0; color: #3a1f70; }
+.rec-src-badge.src-structural   { background: #f9f9f9; border-color: #ddd; color: #666; font-style: italic; }
+.rec-src-badge.src-prologue,
+.rec-src-badge.src-epilogue     { background: #fff0f6; border-color: #e6a0c0; color: #80315a; }
+.rec-src-badge.src-unknown      { background: #fff; border-color: #c0392b; color: #c0392b; }
+.rec-src-badge.src-removed-from-current {
+    background: #fff5f5; border-color: #e09090; color: #8a3a3a; font-style: italic;
+}
+
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint
  * signals "this is here for context but you can't act on it." Win over

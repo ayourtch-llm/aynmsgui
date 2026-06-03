@@ -1,0 +1,50 @@
+<h1 class="list-page-heading">Reconcile: {{name}}</h1>
+<p>
+  <strong>Logical device:</strong> {{device_name}} ·
+  <strong>Hostname:</strong> {{hostname}}
+  &nbsp;|&nbsp;
+  <a href="/diff/{{name}}">Full diff view</a> ·
+  <a href="/devices/{{device_name}}">Edit logical device</a>
+</p>
+
+{{^has_delta}}
+<p style="color:#1b5e20; font-weight:600;">No changes — target and current configs match. Nothing to reconcile.</p>
+{{/has_delta}}
+
+{{#has_delta}}
+<div class="reconcile-summary">
+  <strong>{{total_count}}</strong> delta line(s) ·
+  <span style="color:#1b5e20;">{{resolved_count}} resolved</span> ·
+  <span style="color:#888;">{{unresolved_count}} unresolved</span> ·
+  <strong>{{affected_services}}</strong> service(s) touched
+</div>
+<p style="color:#666; font-size:0.9em; margin-top:6px;">
+  Each row is a line of the delta (the set of commands the device needs to receive to match
+  target). The right column names the source in the target — change that source and the
+  delta line goes away. Lines marked "currently on device, not in target" came from drift
+  on the device and have no target-side source by definition.
+</p>
+
+<table class="reconcile-table">
+<thead>
+<tr>
+  <th style="width:60%;">Delta line</th>
+  <th>Provenance (where this came from in the target)</th>
+</tr>
+</thead>
+<tbody>
+{{#lines}}
+<tr class="rec-{{direction}}">
+  <td><pre class="rec-line">{{text}}</pre></td>
+  <td>
+    <span class="rec-src-badge {{source_class}}">{{source_label}}</span>
+  </td>
+</tr>
+{{/lines}}
+</tbody>
+</table>
+{{/has_delta}}
+
+<p style="margin-top:18px;">
+  <a href="/diff">← Back to overview</a>
+</p>

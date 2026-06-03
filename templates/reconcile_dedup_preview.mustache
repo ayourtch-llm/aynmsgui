@@ -1,0 +1,89 @@
+<h1 class="list-page-heading">Merge services into <code>{{canonical}}</code></h1>
+<p>
+  <a href="/reconcile/dedup">← Back to dedup overview</a>
+</p>
+
+{{#description_only}}
+<div class="reconcile-preview-banner">
+  <strong>Description-only merge.</strong> The services being merged differ from
+  <code>{{canonical}}</code> only in their <code>description ...</code> lines.
+  Merging will reassign every port to <code>{{canonical}}</code> and the
+  device-side description text will switch to whatever <code>{{canonical}}</code>
+  carries (see below for the lines that would be dropped).
+</div>
+{{/description_only}}
+
+<div class="reconcile-summary">
+  <div><strong>Canonical (keeps):</strong> <code>{{canonical}}</code></div>
+  <div><strong>Will be merged in:</strong> <code>{{merge}}</code></div>
+  <div><strong>Impact:</strong> {{total_ports}} port(s) across {{total_devices}} device(s) will be re-assigned.</div>
+</div>
+
+<h2>Members</h2>
+<table class="reconcile-table">
+<thead><tr><th>Service</th><th>Role</th><th>Devices</th><th>Ports</th><th>Descriptions</th></tr></thead>
+<tbody>
+{{#members}}
+<tr class="{{#is_canonical}}dedup-canonical{{/is_canonical}}">
+  <td><a href="/reconcile/services/{{name}}"><code>{{name}}</code></a></td>
+  <td>{{#is_canonical}}<strong style="color:#1b5e20;">canonical</strong>{{/is_canonical}}{{^is_canonical}}<em>merged in</em>{{/is_canonical}}</td>
+  <td>{{device_count}}</td>
+  <td>{{port_count}}</td>
+  <td>
+    {{#descriptions}}<code style="display:block; font-size:0.85em;">{{text}}</code>{{/descriptions}}
+    {{^has_descriptions}}<em style="color:#888;">none</em>{{/has_descriptions}}
+  </td>
+</tr>
+{{/members}}
+</tbody>
+</table>
+
+{{#has_extra_descriptions}}
+<h2 style="color:#b07000;">Descriptions that will be lost</h2>
+<p style="color:#666; font-size:0.9em;">
+  These <code>description ...</code> lines appear on at least one non-canonical
+  member and are <em>not</em> in <code>{{canonical}}</code>. After the merge they
+  will no longer appear in the generated config for any affected port.
+</p>
+<ul>
+  {{#extra_descriptions}}<li><code>{{text}}</code></li>{{/extra_descriptions}}
+</ul>
+{{/has_extra_descriptions}}
+
+<h2>Canonical service preview</h2>
+<details open>
+  <summary><code>{{canonical}}/port-config.txt</code></summary>
+  <pre style="background:#fafafa; border:1px solid #e3e3e3; border-radius:3px; padding:6px 10px;">{{canonical_preview}}</pre>
+</details>
+
+<h2>Affected device JSONs</h2>
+{{#total_devices}}
+<table class="reconcile-table">
+<thead><tr><th>Device</th><th>Ports affected</th><th>Breakdown</th></tr></thead>
+<tbody>
+{{#devices}}
+<tr>
+  <td><a href="/diff/{{device_name}}/reconcile">{{device_name}}</a></td>
+  <td>{{port_count}}</td>
+  <td><code style="font-size:0.85em;">{{port_breakdown}}</code></td>
+</tr>
+{{/devices}}
+</tbody>
+</table>
+{{/total_devices}}
+{{^total_devices}}
+<p style="color:#888;"><em>No device currently references any of the services to be merged. Nothing to do.</em></p>
+{{/total_devices}}
+
+<p style="margin-top:18px;">
+  <form method="POST" action="/reconcile/dedup/merge" style="display:inline;">
+    <input type="hidden" name="canonical" value="{{canonical}}">
+    <input type="hidden" name="merge" value="{{merge}}">
+    <label style="margin-right:12px;">
+      <input type="checkbox" name="delete_after" value="1">
+      Also delete the merged service directories after the merge
+    </label>
+    <button type="submit"{{^total_devices}} disabled{{/total_devices}}>Confirm merge</button>
+  </form>
+  <a href="/reconcile/dedup" style="margin-left:12px;">Cancel</a>
+</p>

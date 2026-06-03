@@ -1,0 +1,85 @@
+<h1 class="list-page-heading">Service deduplication</h1>
+<p>
+  Two flavours of duplicates: <strong>identical</strong> (same
+  <code>port-config.txt</code> after whitespace normalization — fully safe to
+  merge) and <strong>description-only differences</strong> (services that
+  produce the same behaviour but carry different <code>description ...</code>
+  lines — safe to merge but the device-side description text will change).
+</p>
+<p>
+  <a href="/reconcile/services">← All services</a>
+</p>
+
+<h2>Identical services</h2>
+{{^has_identical}}
+<p style="color:#1b5e20; font-weight:600;">✓ No identical-content service duplicates.</p>
+{{/has_identical}}
+{{#has_identical}}
+{{#identical_groups}}
+<details open class="dedup-group dedup-identical">
+  <summary>
+    Keep <strong>{{canonical}}</strong>, merge: <code>{{merge_csv}}</code>
+    &nbsp;·&nbsp;
+    <span style="color:#666;">{{impacted_ports}} port(s) across {{impacted_devices}} device(s) would be reassigned</span>
+  </summary>
+  <table class="reconcile-table">
+    <thead><tr><th>Service</th><th>Devices</th><th>Ports</th><th>Role</th></tr></thead>
+    <tbody>
+    {{#members}}
+    <tr class="{{#is_canonical}}dedup-canonical{{/is_canonical}}">
+      <td><a href="/reconcile/services/{{name}}"><code>{{name}}</code></a></td>
+      <td>{{device_count}}</td>
+      <td>{{port_count}}</td>
+      <td>{{#is_canonical}}<strong style="color:#1b5e20;">canonical (keeps)</strong>{{/is_canonical}}{{^is_canonical}}<em>will be merged in</em>{{/is_canonical}}</td>
+    </tr>
+    {{/members}}
+    </tbody>
+  </table>
+  <p>
+    <a class="dedup-merge-link" href="/reconcile/dedup/merge?canonical={{canonical}}&merge={{merge_csv}}">Preview merge →</a>
+  </p>
+</details>
+{{/identical_groups}}
+{{/has_identical}}
+
+<h2>Description-only differences</h2>
+<p style="color:#666; font-size:0.9em;">
+  Services here are byte-equal once <code>description ...</code> lines are
+  stripped. Merging them rewires the ports but loses the descriptions on the
+  non-canonical members — the preview page shows exactly which descriptions
+  would be dropped.
+</p>
+{{^has_description_only}}
+<p style="color:#1b5e20; font-weight:600;">✓ No description-only near-duplicates.</p>
+{{/has_description_only}}
+{{#has_description_only}}
+{{#description_only_groups}}
+<details class="dedup-group dedup-desc-only">
+  <summary>
+    Keep <strong>{{canonical}}</strong>, merge: <code>{{merge_csv}}</code>
+    &nbsp;·&nbsp;
+    <span style="color:#666;">{{impacted_ports}} port(s) across {{impacted_devices}} device(s)</span>
+  </summary>
+  <table class="reconcile-table">
+    <thead><tr><th>Service</th><th>Devices</th><th>Ports</th><th>Descriptions</th><th>Role</th></tr></thead>
+    <tbody>
+    {{#members}}
+    <tr class="{{#is_canonical}}dedup-canonical{{/is_canonical}}">
+      <td><a href="/reconcile/services/{{name}}"><code>{{name}}</code></a></td>
+      <td>{{device_count}}</td>
+      <td>{{port_count}}</td>
+      <td>
+        {{#descriptions}}<code style="display:block; font-size:0.85em;">{{text}}</code>{{/descriptions}}
+        {{^has_descriptions}}<em style="color:#888;">none</em>{{/has_descriptions}}
+      </td>
+      <td>{{#is_canonical}}<strong style="color:#1b5e20;">canonical (keeps)</strong>{{/is_canonical}}{{^is_canonical}}<em>will be merged in</em>{{/is_canonical}}</td>
+    </tr>
+    {{/members}}
+    </tbody>
+  </table>
+  <p>
+    <a class="dedup-merge-link" href="/reconcile/dedup/merge?canonical={{canonical}}&merge={{merge_csv}}">Preview merge →</a>
+  </p>
+</details>
+{{/description_only_groups}}
+{{/has_description_only}}

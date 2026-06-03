@@ -43,6 +43,8 @@ pub struct Templates {
     pub reconcile_fold_preview: mustache::Template,
     pub reconcile_services_index: mustache::Template,
     pub reconcile_service_detail: mustache::Template,
+    pub reconcile_dedup_index: mustache::Template,
+    pub reconcile_dedup_preview: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -82,6 +84,8 @@ impl Templates {
             reconcile_fold_preview: load("reconcile_fold_preview")?,
             reconcile_services_index: load("reconcile_services_index")?,
             reconcile_service_detail: load("reconcile_service_detail")?,
+            reconcile_dedup_index: load("reconcile_dedup_index")?,
+            reconcile_dedup_preview: load("reconcile_dedup_preview")?,
             message: load("message")?,
         })
     }

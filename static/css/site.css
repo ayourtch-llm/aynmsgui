@@ -345,6 +345,34 @@ tr.has-fold-candidates td.prologue-count {
     font-weight: 700;
 }
 
+/* /reconcile/dedup: each duplicate group is a collapsible panel; the
+ * canonical row is highlighted so the eye finds it without reading the
+ * Role column. */
+details.dedup-group {
+    margin: 8px 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 6px 10px;
+    background: #ffffff;
+}
+details.dedup-identical { border-left: 4px solid #1b5e20; }
+details.dedup-desc-only { border-left: 4px solid #b07000; }
+details.dedup-group > summary { cursor: pointer; font-weight: 600; }
+tr.dedup-canonical,
+tr.dedup-canonical:nth-child(odd),
+tr.dedup-canonical:nth-child(even) {
+    background-color: #eafbea !important;
+}
+.dedup-merge-link {
+    display: inline-block;
+    padding: 4px 10px;
+    background: #1a5276;
+    color: #fff !important;
+    border-radius: 3px;
+    text-decoration: none;
+}
+.dedup-merge-link:hover { background: #2980b9; }
+
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint
  * signals "this is here for context but you can't act on it." Win over

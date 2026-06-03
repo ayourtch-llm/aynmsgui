@@ -2076,6 +2076,579 @@ fn clear_prologue_for_device(
     }
 }
 
+// ── Service dedup (find services with identical or near-identical bodies) ────
+
+/// Trim each line and drop trailing blank lines. Used as the *strict*
+/// match key — two services with the same trimmed/joined content are
+/// considered duplicates and one can be merged into the other with no
+/// behaviour change.
+fn normalize_service_strict(content: &str) -> String {
+    let mut out = String::new();
+    for line in content.lines() {
+        out.push_str(line.trim_end());
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+/// Same as `normalize_service_strict` but with all `description ...`
+/// lines stripped. Two services with the same loose key are equivalent
+/// modulo description text — merging them is still safe semantically
+/// but the description text on the device(s) will change. The dedup
+/// UI surfaces both cases separately.
+fn normalize_service_loose(content: &str) -> String {
+    let mut out = String::new();
+    for line in content.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.trim_start().starts_with("description ") {
+            continue;
+        }
+        out.push_str(trimmed);
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
+/// Extract just the description lines for diffing.
+fn description_lines(content: &str) -> Vec<String> {
+    content
+        .lines()
+        .filter(|l| l.trim_start().starts_with("description "))
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+fn wrap_lines(lines: Vec<String>) -> Vec<TextLine> {
+    lines.into_iter().map(|text| TextLine { text }).collect()
+}
+
+#[derive(Serialize, Clone)]
+struct TextLine {
+    text: String,
+}
+
+#[derive(Serialize, Clone)]
+struct DedupMember {
+    name: String,
+    device_count: usize,
+    port_count: usize,
+    /// `description ...` lines present in this member.
+    descriptions: Vec<TextLine>,
+    has_descriptions: bool,
+    /// True if this is the suggested canonical for its group.
+    is_canonical: bool,
+}
+
+#[derive(Serialize)]
+struct DedupGroup {
+    /// "identical" or "description-only" — controls the UI banner.
+    kind: &'static str,
+    is_identical: bool,
+    /// All members of this group, with the suggested canonical first.
+    members: Vec<DedupMember>,
+    /// CSV of member names to merge INTO the canonical (everything
+    /// except the canonical). Embedded in the merge link's query.
+    merge_csv: String,
+    /// Canonical name (also = members[0].name).
+    canonical: String,
+    /// Sum of port_counts across all non-canonical members — how many
+    /// ports the merge would touch.
+    impacted_ports: usize,
+    /// Sum of device_counts across all non-canonical members — how many
+    /// devices the merge would touch (de-dup'd by name).
+    impacted_devices: usize,
+    /// Canonical's port-config.txt content for a side preview.
+    canonical_preview: String,
+}
+
+#[derive(Serialize)]
+struct DedupIndexCtx {
+    identical_groups: Vec<DedupGroup>,
+    description_only_groups: Vec<DedupGroup>,
+    has_identical: bool,
+    has_description_only: bool,
+}
+
+fn find_duplicate_groups(cfggen_base: &std::path::Path) -> (Vec<DedupGroup>, Vec<DedupGroup>) {
+    let services = load_available_services(cfggen_base);
+    let services_map = load_service_port_configs(cfggen_base, &services);
+    let usage = collect_service_usage(cfggen_base);
+    let usage_by: std::collections::HashMap<String, &ServiceUsageRaw> =
+        usage.iter().map(|u| (u.name.clone(), u)).collect();
+
+    // Group by strict normalization (identical) and by loose normalization
+    // (identical-besides-description).
+    let mut strict_buckets: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut loose_buckets: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for name in &services {
+        let content = services_map.get(name).cloned().unwrap_or_default();
+        let strict_key = normalize_service_strict(&content);
+        let loose_key = normalize_service_loose(&content);
+        strict_buckets.entry(strict_key).or_default().push(name.clone());
+        loose_buckets.entry(loose_key).or_default().push(name.clone());
+    }
+
+    let make_group = |members: Vec<String>, kind: &'static str| -> DedupGroup {
+        // Canonical = the member with the highest port count, ties broken
+        // alphabetically. Stable so a refresh doesn't pick a different one.
+        let mut sorted_members = members.clone();
+        sorted_members.sort_by(|a, b| {
+            let pa = usage_by.get(a).map(|u| u.port_count).unwrap_or(0);
+            let pb = usage_by.get(b).map(|u| u.port_count).unwrap_or(0);
+            pb.cmp(&pa).then_with(|| a.cmp(b))
+        });
+        let canonical = sorted_members[0].clone();
+        let canonical_content = services_map.get(&canonical).cloned().unwrap_or_default();
+        let canonical_preview = canonical_content.clone();
+
+        let member_views: Vec<DedupMember> = sorted_members
+            .iter()
+            .map(|m| {
+                let u = usage_by.get(m);
+                let device_count = u.map(|u| u.devices.len()).unwrap_or(0);
+                let port_count = u.map(|u| u.port_count).unwrap_or(0);
+                let content = services_map.get(m).cloned().unwrap_or_default();
+                let descs = description_lines(&content);
+                let has_descriptions = !descs.is_empty();
+                DedupMember {
+                    name: m.clone(),
+                    device_count,
+                    port_count,
+                    descriptions: wrap_lines(descs),
+                    has_descriptions,
+                    is_canonical: m == &canonical,
+                }
+            })
+            .collect();
+
+        // Tally impact across non-canonical members; dedupe device set.
+        let mut impacted_device_set: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut impacted_ports = 0usize;
+        for m in &member_views {
+            if m.is_canonical {
+                continue;
+            }
+            impacted_ports += m.port_count;
+            if let Some(u) = usage_by.get(&m.name) {
+                for d in &u.devices {
+                    impacted_device_set.insert(d.clone());
+                }
+            }
+        }
+        let merge_csv = member_views
+            .iter()
+            .filter(|m| !m.is_canonical)
+            .map(|m| m.name.clone())
+            .collect::<Vec<_>>()
+            .join(",");
+        DedupGroup {
+            kind,
+            is_identical: kind == "identical",
+            canonical,
+            canonical_preview,
+            members: member_views,
+            merge_csv,
+            impacted_ports,
+            impacted_devices: impacted_device_set.len(),
+        }
+    };
+
+    // Strict groups first (these are the slam-dunk merges).
+    let mut identical: Vec<DedupGroup> = strict_buckets
+        .into_iter()
+        .filter(|(_, names)| names.len() >= 2)
+        .map(|(_, names)| make_group(names, "identical"))
+        .collect();
+    identical.sort_by(|a, b| b.impacted_ports.cmp(&a.impacted_ports));
+
+    // Loose groups, EXCLUDING anything already covered by a strict group
+    // (so the description-only list only carries near-but-not-identical
+    // matches that the operator still has to decide on).
+    let strict_member_set: std::collections::HashSet<String> = identical
+        .iter()
+        .flat_map(|g| g.members.iter().map(|m| m.name.clone()))
+        .collect();
+    let mut description_only: Vec<DedupGroup> = loose_buckets
+        .into_iter()
+        .filter(|(_, names)| names.len() >= 2)
+        .filter(|(_, names)| !names.iter().all(|n| strict_member_set.contains(n)))
+        .map(|(_, names)| make_group(names, "description-only"))
+        .collect();
+    description_only.sort_by(|a, b| b.impacted_ports.cmp(&a.impacted_ports));
+
+    (identical, description_only)
+}
+
+pub async fn dedup_index(State(state): State<AppState>) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+    let (identical_groups, description_only_groups) = find_duplicate_groups(&cfggen_base);
+    let ctx = DedupIndexCtx {
+        has_identical: !identical_groups.is_empty(),
+        has_description_only: !description_only_groups.is_empty(),
+        identical_groups,
+        description_only_groups,
+    };
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.reconcile_dedup_index,
+            "Service deduplication",
+            "",
+            &ctx,
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+// ── Dedup merge preview / execute ────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct DedupMergeQuery {
+    /// Service name to keep.
+    pub canonical: String,
+    /// Comma-separated list of services to merge INTO the canonical.
+    pub merge: String,
+}
+
+#[derive(Deserialize)]
+pub struct DedupMergeForm {
+    pub canonical: String,
+    pub merge: String,
+    /// `1` means also delete the source services' directories from disk
+    /// after the merge. Default is to leave them in place (operator
+    /// can clean up manually).
+    #[serde(default)]
+    pub delete_after: String,
+}
+
+#[derive(Serialize)]
+struct DedupAffectedDevice {
+    device_name: String,
+    /// "Port5, Port6 (was access-vlan6-2); Port12 (was access-vlan6-x)"
+    port_breakdown: String,
+    port_count: usize,
+}
+
+#[derive(Serialize)]
+struct DedupMergePreviewCtx {
+    canonical: String,
+    canonical_preview: String,
+    /// CSV passed through to the POST form.
+    merge: String,
+    /// Member rows including the canonical (so the operator sees a
+    /// before-and-after of what they're merging away).
+    members: Vec<DedupMember>,
+    description_only: bool,
+    /// Description lines unique to non-canonical members — surfaces
+    /// "you're about to drop these descriptions" warnings.
+    extra_descriptions: Vec<TextLine>,
+    devices: Vec<DedupAffectedDevice>,
+    total_devices: usize,
+    total_ports: usize,
+    has_extra_descriptions: bool,
+}
+
+pub async fn dedup_merge_preview(
+    State(state): State<AppState>,
+    Query(q): Query<DedupMergeQuery>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let merge_names: Vec<String> = q
+        .merge
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if merge_names.is_empty() {
+        return message(
+            &state,
+            "Nothing to merge",
+            "merge= query parameter was empty",
+            Some(("/reconcile/dedup", "Back")),
+        );
+    }
+
+    let available = load_available_services(&cfggen_base);
+    let services_map = load_service_port_configs(&cfggen_base, &available);
+    let canonical_preview = services_map.get(&q.canonical).cloned().unwrap_or_default();
+    if canonical_preview.is_empty() {
+        return message(
+            &state,
+            "Unknown canonical",
+            &format!("Service '{}' has no port-config.txt", q.canonical),
+            Some(("/reconcile/dedup", "Back")),
+        );
+    }
+
+    let usage = collect_service_usage(&cfggen_base);
+    let usage_by: std::collections::HashMap<String, &ServiceUsageRaw> =
+        usage.iter().map(|u| (u.name.clone(), u)).collect();
+
+    // Are these strict-identical or just description-only?
+    let canon_loose = normalize_service_loose(&canonical_preview);
+    let canon_strict = normalize_service_strict(&canonical_preview);
+    let mut description_only = false;
+    for n in &merge_names {
+        let content = services_map.get(n).cloned().unwrap_or_default();
+        if normalize_service_strict(&content) != canon_strict
+            && normalize_service_loose(&content) == canon_loose
+        {
+            description_only = true;
+        }
+    }
+
+    let mut members: Vec<DedupMember> = std::iter::once(q.canonical.clone())
+        .chain(merge_names.iter().cloned())
+        .map(|n| {
+            let u = usage_by.get(&n);
+            let content = services_map.get(&n).cloned().unwrap_or_default();
+            let descs = description_lines(&content);
+            let has_descriptions = !descs.is_empty();
+            DedupMember {
+                name: n.clone(),
+                device_count: u.map(|u| u.devices.len()).unwrap_or(0),
+                port_count: u.map(|u| u.port_count).unwrap_or(0),
+                descriptions: wrap_lines(descs),
+                has_descriptions,
+                is_canonical: n == q.canonical,
+            }
+        })
+        .collect();
+
+    // Description lines on any non-canonical member that aren't on the canonical.
+    let canon_descs: std::collections::HashSet<String> = members[0]
+        .descriptions
+        .iter()
+        .map(|t| t.text.clone())
+        .collect();
+    let mut extra_descriptions: Vec<TextLine> = Vec::new();
+    let mut seen_extra: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in members.iter().skip(1) {
+        for d in &m.descriptions {
+            if !canon_descs.contains(&d.text) && seen_extra.insert(d.text.clone()) {
+                extra_descriptions.push(d.clone());
+            }
+        }
+    }
+
+    // Scan every device JSON for ports whose service is one of the mergees.
+    let merge_set: std::collections::HashSet<&str> =
+        merge_names.iter().map(|s| s.as_str()).collect();
+    let mut by_device: std::collections::BTreeMap<String, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    walk_device_jsons(&cfggen_base, |device_name, raw| {
+        if let Some(modules) = raw.get("modules").and_then(|v| v.as_array()) {
+            for module in modules {
+                if let Some(ports) = module.get("ports").and_then(|p| p.as_array()) {
+                    for port in ports {
+                        let svc = port.get("service").and_then(|v| v.as_str()).unwrap_or("");
+                        if merge_set.contains(svc) {
+                            let port_name = port
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string();
+                            by_device
+                                .entry(device_name.to_string())
+                                .or_default()
+                                .push((svc.to_string(), port_name));
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let mut devices: Vec<DedupAffectedDevice> = Vec::new();
+    let mut total_ports = 0usize;
+    for (device_name, mut hits) in by_device {
+        hits.sort();
+        total_ports += hits.len();
+        // Group by source service for the human-readable breakdown.
+        let mut by_svc: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (svc, port) in &hits {
+            by_svc.entry(svc.clone()).or_default().push(port.clone());
+        }
+        let breakdown = by_svc
+            .into_iter()
+            .map(|(svc, ports)| format!("{} (was {})", ports.join(", "), svc))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let port_count = hits.len();
+        devices.push(DedupAffectedDevice {
+            device_name,
+            port_breakdown: breakdown,
+            port_count,
+        });
+    }
+    let total_devices = devices.len();
+
+    // Refresh canonical port-config preview from disk for display.
+    members[0].descriptions = wrap_lines(description_lines(&canonical_preview));
+    members[0].has_descriptions = !members[0].descriptions.is_empty();
+
+    let ctx = DedupMergePreviewCtx {
+        canonical: q.canonical,
+        canonical_preview,
+        merge: q.merge,
+        members,
+        description_only,
+        has_extra_descriptions: !extra_descriptions.is_empty(),
+        extra_descriptions,
+        devices,
+        total_devices,
+        total_ports,
+    };
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.reconcile_dedup_preview,
+            "Merge services",
+            "",
+            &ctx,
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+pub async fn dedup_merge_execute(
+    State(state): State<AppState>,
+    Form(form): Form<DedupMergeForm>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let merge_names: Vec<String> = form
+        .merge
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if merge_names.is_empty() {
+        return message(
+            &state,
+            "Nothing to merge",
+            "merge field was empty",
+            Some(("/reconcile/dedup", "Back")),
+        );
+    }
+
+    let canonical_dir = cfggen_base.join("services").join(&form.canonical);
+    if !canonical_dir.exists() {
+        return message(
+            &state,
+            "Unknown canonical",
+            &format!("No service at {}", canonical_dir.display()),
+            Some(("/reconcile/dedup", "Back")),
+        );
+    }
+
+    // Step 1: rewrite every device JSON, swapping merged services →
+    // canonical. Remember which devices we touched for the recompile loop.
+    let merge_set: std::collections::HashSet<&str> =
+        merge_names.iter().map(|s| s.as_str()).collect();
+    let mut touched_devices: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    walk_device_jsons(&cfggen_base, |device_name, _| {
+        let flat = cfggen_base
+            .join("logical-devices")
+            .join(format!("{}.json", device_name));
+        let dir = cfggen_base
+            .join("logical-devices")
+            .join(device_name)
+            .join("config.json");
+        let json_path = if flat.exists() {
+            flat
+        } else if dir.exists() {
+            dir
+        } else {
+            return;
+        };
+        let Ok(content) = std::fs::read_to_string(&json_path) else { return };
+        let Ok(mut raw): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
+            return
+        };
+        let mut changed = false;
+        if let Some(modules) = raw.get_mut("modules").and_then(|v| v.as_array_mut()) {
+            for module in modules {
+                if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
+                    for port in ports {
+                        let svc_owned: Option<String> = port
+                            .get("service")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        if let Some(svc) = svc_owned {
+                            if merge_set.contains(svc.as_str()) {
+                                if let Some(obj) = port.as_object_mut() {
+                                    obj.insert(
+                                        "service".to_string(),
+                                        serde_json::Value::String(form.canonical.clone()),
+                                    );
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if changed {
+            touched_devices.insert(device_name.to_string());
+            if let Ok(new_content) = serde_json::to_string_pretty(&raw) {
+                let _ = std::fs::write(&json_path, new_content);
+            }
+        }
+    });
+
+    info!(
+        canonical = %form.canonical,
+        merge = ?merge_names,
+        devices = touched_devices.len(),
+        "Merged services into canonical"
+    );
+
+    // Step 2: optionally delete the merged service directories.
+    let delete_after = matches!(form.delete_after.as_str(), "1" | "on" | "true");
+    if delete_after {
+        for n in &merge_names {
+            let p = cfggen_base.join("services").join(n);
+            if p.exists() {
+                if let Err(e) = std::fs::remove_dir_all(&p) {
+                    warn!(path = %p.display(), error = %e, "Failed to delete merged service dir");
+                }
+            }
+        }
+    }
+
+    // Step 3: recompile every touched device locally.
+    for device_name in &touched_devices {
+        if let Err(e) = crate::routes::devices::compile_device_config(
+            device_name,
+            &cfggen_base,
+            &state.config,
+        ) {
+            warn!(device = %device_name, error = %e, "Recompile after merge failed");
+        }
+    }
+
+    Redirect::to("/reconcile/dedup").into_response()
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -2092,5 +2665,10 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/reconcile/services/{svc}/fold-prologue",
             get(service_fold_preview).post(service_fold_execute),
+        )
+        .route("/reconcile/dedup", get(dedup_index))
+        .route(
+            "/reconcile/dedup/merge",
+            get(dedup_merge_preview).post(dedup_merge_execute),
         )
 }

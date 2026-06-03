@@ -303,6 +303,12 @@ struct FoldDeviceCtx {
 struct FoldPreviewCtx {
     /// The URL's {name} we came from — used for the "Back to reconcile" link.
     name: String,
+    /// Full URL the confirmation form should POST to. Device-centric
+    /// calls go to /diff/{name}/reconcile/fold-prologue; service-centric
+    /// calls go to /reconcile/services/{svc}/fold-prologue.
+    form_action: String,
+    /// Full URL the Cancel link should go to.
+    cancel_url: String,
     service: String,
     prologue: String,
     /// Trimmed display version of the prologue (no leading space).
@@ -1064,9 +1070,13 @@ pub async fn fold_prologue_preview(
         .to_string();
 
     let prologue_display = q.prologue.trim_start().to_string();
+    let form_action = format!("/diff/{}/reconcile/fold-prologue", name);
+    let cancel_url = format!("/diff/{}/reconcile", name);
 
     let ctx = FoldPreviewCtx {
         name: name.clone(),
+        form_action,
+        cancel_url,
         service: q.service,
         prologue: q.prologue,
         prologue_display,
@@ -1141,63 +1151,7 @@ pub async fn fold_prologue_execute(
     let touched_devices: Vec<String> = matches.iter().map(|(d, _)| d.clone()).collect();
 
     for (device_name, _) in &matches {
-        let flat = cfggen_base
-            .join("logical-devices")
-            .join(format!("{}.json", device_name));
-        let dir = cfggen_base
-            .join("logical-devices")
-            .join(device_name)
-            .join("config.json");
-        let json_path = if flat.exists() {
-            flat
-        } else if dir.exists() {
-            dir
-        } else {
-            warn!(device = %device_name, "Device JSON disappeared mid-fold; skipping");
-            continue;
-        };
-        let content = match std::fs::read_to_string(&json_path) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(path = %json_path.display(), error = %e, "Failed to read device JSON");
-                continue;
-            }
-        };
-        let mut raw_json: serde_json::Value = match serde_json::from_str(&content) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!(path = %json_path.display(), error = %e, "Invalid JSON; skipping");
-                continue;
-            }
-        };
-        if let Some(modules) = raw_json.get_mut("modules").and_then(|v| v.as_array_mut()) {
-            for module in modules {
-                if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
-                    for port in ports {
-                        let svc_matches = port.get("service").and_then(|v| v.as_str())
-                            == Some(form.service.as_str());
-                        let prol_matches = port.get("prologue").and_then(|v| v.as_str())
-                            == Some(form.prologue.as_str());
-                        if svc_matches && prol_matches {
-                            if let Some(obj) = port.as_object_mut() {
-                                obj.insert("prologue".to_string(), serde_json::Value::Null);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let new_content = match serde_json::to_string_pretty(&raw_json) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(error = %e, "Failed to serialize device JSON");
-                continue;
-            }
-        };
-        if let Err(e) = std::fs::write(&json_path, new_content) {
-            warn!(path = %json_path.display(), error = %e, "Failed to write device JSON");
-            continue;
-        }
+        clear_prologue_for_device(&cfggen_base, device_name, &form.service, &form.prologue);
     }
 
     info!(
@@ -1570,6 +1524,554 @@ pub(crate) fn natural_compare_port(a: &str, b: &str) -> std::cmp::Ordering {
     ap.cmp(&bp).then_with(|| an.cmp(&bn))
 }
 
+// ── Service-centric reconcile (cross-device) ─────────────────────────────────
+
+#[derive(Serialize)]
+struct ServiceIndexRow {
+    name: String,
+    device_count: usize,
+    port_count: usize,
+    distinct_prologue_count: usize,
+    /// True if this service is referenced by at least one port across the
+    /// fleet. Services nobody uses are listed at the bottom for awareness.
+    in_use: bool,
+}
+
+#[derive(Serialize)]
+struct ServicesIndexCtx {
+    rows: Vec<ServiceIndexRow>,
+    in_use_count: usize,
+    unused_count: usize,
+    quicksearch_table_id: &'static str,
+}
+
+pub async fn services_index(State(state): State<AppState>) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let available = load_available_services(&cfggen_base);
+    let usage = collect_service_usage(&cfggen_base);
+    let mut by_name: std::collections::HashMap<String, &ServiceUsageRaw> =
+        usage.iter().map(|u| (u.name.clone(), u)).collect();
+
+    let mut rows: Vec<ServiceIndexRow> = available
+        .iter()
+        .map(|svc| {
+            let u = by_name.remove(svc);
+            let (device_count, port_count, distinct_prologue_count) = u
+                .map(|u| (u.devices.len(), u.port_count, u.distinct_prologue_count))
+                .unwrap_or((0, 0, 0));
+            ServiceIndexRow {
+                name: svc.clone(),
+                device_count,
+                port_count,
+                distinct_prologue_count,
+                in_use: device_count > 0,
+            }
+        })
+        .collect();
+    // In-use first, then alphabetical within each bucket.
+    rows.sort_by(|a, b| b.in_use.cmp(&a.in_use).then_with(|| a.name.cmp(&b.name)));
+    let in_use_count = rows.iter().filter(|r| r.in_use).count();
+    let unused_count = rows.len() - in_use_count;
+
+    let ctx = ServicesIndexCtx {
+        rows,
+        in_use_count,
+        unused_count,
+        quicksearch_table_id: "services-reconcile-table",
+    };
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.reconcile_services_index,
+            "Service prologue reconciliation",
+            "",
+            &ctx,
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+#[derive(Serialize)]
+struct ServicePrologueRow {
+    /// The literal prologue text on the device JSON, including leading
+    /// space. Used as a hidden form value when folding.
+    prologue: String,
+    /// Display version (trimmed) — what the operator reads in the table.
+    prologue_display: String,
+    /// True when the row represents ports whose `prologue` is null (i.e.
+    /// already clean). Those rows don't get a Fold button.
+    is_null: bool,
+    port_count: usize,
+    device_count: usize,
+    /// "AD6-X001, AD6-X003 (+5 more)" preview.
+    devices_preview: String,
+    /// Repeated per row so the template's form action can reference it
+    /// without needing parent-context lookup (which not all mustache
+    /// implementations support inside iteration).
+    service: String,
+}
+
+#[derive(Serialize)]
+struct ServiceDetailCtx {
+    service: String,
+    service_path: String,
+    port_config_preview: String,
+    rows: Vec<ServicePrologueRow>,
+    has_rows: bool,
+    total_devices: usize,
+    total_ports: usize,
+}
+
+pub async fn service_detail(
+    State(state): State<AppState>,
+    Path(svc): Path<String>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+    let service_dir = cfggen_base.join("services").join(&svc);
+    if !service_dir.exists() {
+        return message(
+            &state,
+            "Unknown service",
+            &format!("No service directory at {}", service_dir.display()),
+            Some(("/reconcile/services", "Back to services")),
+        );
+    }
+
+    let port_config_path = service_dir.join("port-config.txt");
+    let port_config_preview = std::fs::read_to_string(&port_config_path).unwrap_or_default();
+
+    let prologues = collect_service_prologues(&cfggen_base, &svc);
+    let mut rows: Vec<ServicePrologueRow> = prologues
+        .into_iter()
+        .map(|p| {
+            let device_count = p.devices.len();
+            let port_count: usize = p.devices.iter().map(|(_, ports)| ports.len()).sum();
+            let mut names: Vec<&str> = p.devices.iter().map(|(n, _)| n.as_str()).collect();
+            names.sort();
+            let preview = if names.len() <= 4 {
+                names.join(", ")
+            } else {
+                format!(
+                    "{} (+{} more)",
+                    names[..4].join(", "),
+                    names.len() - 4
+                )
+            };
+            ServicePrologueRow {
+                prologue_display: if p.is_null {
+                    "(no prologue)".to_string()
+                } else {
+                    p.prologue.trim_start().to_string()
+                },
+                is_null: p.is_null,
+                prologue: p.prologue,
+                port_count,
+                device_count,
+                devices_preview: preview,
+                service: svc.clone(),
+            }
+        })
+        .collect();
+    // Fold candidates first (largest impact), null-prologue summary last.
+    rows.sort_by(|a, b| {
+        a.is_null
+            .cmp(&b.is_null)
+            .then_with(|| b.port_count.cmp(&a.port_count))
+    });
+
+    let total_devices = rows
+        .iter()
+        .filter(|r| !r.is_null)
+        .map(|r| r.device_count)
+        .sum::<usize>();
+    let total_ports = rows
+        .iter()
+        .filter(|r| !r.is_null)
+        .map(|r| r.port_count)
+        .sum::<usize>();
+
+    let ctx = ServiceDetailCtx {
+        service: svc.clone(),
+        service_path: port_config_path.display().to_string(),
+        port_config_preview,
+        has_rows: !rows.is_empty(),
+        rows,
+        total_devices,
+        total_ports,
+    };
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.reconcile_service_detail,
+            &format!("Service: {svc}"),
+            "",
+            &ctx,
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ServiceFoldQuery {
+    pub prologue: String,
+}
+
+#[derive(Deserialize)]
+pub struct ServiceFoldForm {
+    pub prologue: String,
+}
+
+/// Service-centric variant of the fold confirmation page. Reuses the
+/// existing `reconcile_fold_preview` template but redirects back to the
+/// per-service page after a successful fold (instead of a device's
+/// reconcile page).
+pub async fn service_fold_preview(
+    State(state): State<AppState>,
+    Path(svc): Path<String>,
+    Query(q): Query<ServiceFoldQuery>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let matches = scan_devices_for_prologue_pair(&cfggen_base, &svc, &q.prologue);
+    let total_devices = matches.len();
+    let total_ports: usize = matches.iter().map(|(_, ports)| ports.len()).sum();
+    let devices: Vec<FoldDeviceCtx> = matches
+        .into_iter()
+        .map(|(device_name, ports)| FoldDeviceCtx {
+            port_count: ports.len(),
+            port_names: ports.join(", "),
+            device_name,
+        })
+        .collect();
+    let service_path = cfggen_base
+        .join("services")
+        .join(&svc)
+        .join("port-config.txt")
+        .display()
+        .to_string();
+    let prologue_display = q.prologue.trim_start().to_string();
+
+    let form_action = format!("/reconcile/services/{}/fold-prologue", svc);
+    let cancel_url = format!("/reconcile/services/{}", svc);
+    let ctx = FoldPreviewCtx {
+        name: svc.clone(), // unused by the template now, kept for layout
+        form_action,
+        cancel_url,
+        service: svc,
+        prologue: q.prologue,
+        prologue_display,
+        service_path,
+        devices,
+        total_devices,
+        total_ports,
+    };
+    let html = state
+        .templates
+        .render_page(
+            &state.templates.reconcile_fold_preview,
+            "Fold prologue into service",
+            "",
+            &ctx,
+        )
+        .unwrap_or_else(|e| format!("<h1>Template error</h1><pre>{e}</pre>"));
+    Html(html).into_response()
+}
+
+pub async fn service_fold_execute(
+    State(state): State<AppState>,
+    Path(svc): Path<String>,
+    Form(form): Form<ServiceFoldForm>,
+) -> Response {
+    // Delegate to the device-keyed executor — it doesn't actually use
+    // the `name` parameter for the write, only for the post-fold redirect.
+    // Build a fake-but-honest path so the inner handler's logic is
+    // unchanged, then override the redirect ourselves.
+    let inner_form = FoldForm {
+        service: svc.clone(),
+        prologue: form.prologue.clone(),
+    };
+    // Run the same work in-place — but redirect back to the service page.
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+    let _ = inner_form; // (kept for parity; the inner call below uses fields directly)
+
+    // ── Mirror fold_prologue_execute, but redirect to /reconcile/services/{svc}
+    let port_config_path = cfggen_base
+        .join("services")
+        .join(&svc)
+        .join("port-config.txt");
+    if !port_config_path.exists() {
+        return message(
+            &state,
+            "Unknown service",
+            &format!("Service has no port-config.txt: {}", port_config_path.display()),
+            Some(("/reconcile/services", "Back")),
+        );
+    }
+    let existing = std::fs::read_to_string(&port_config_path).unwrap_or_default();
+    let line_to_add = if form.prologue.starts_with(' ') {
+        form.prologue.clone()
+    } else {
+        format!(" {}", form.prologue.trim_start())
+    };
+    let mut new_content = String::new();
+    new_content.push_str(line_to_add.trim_end());
+    new_content.push('\n');
+    new_content.push_str(&existing);
+    if !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    if let Err(e) = std::fs::write(&port_config_path, &new_content) {
+        warn!(path = %port_config_path.display(), error = %e, "Failed to write service port-config.txt");
+        return message(&state, "Write failed", &format!("{e}"), None);
+    }
+    let matches = scan_devices_for_prologue_pair(&cfggen_base, &svc, &form.prologue);
+    let touched_devices: Vec<String> = matches.iter().map(|(d, _)| d.clone()).collect();
+    for (device_name, _) in &matches {
+        clear_prologue_for_device(&cfggen_base, device_name, &svc, &form.prologue);
+    }
+    info!(
+        service = %svc,
+        devices = touched_devices.len(),
+        "Folded prologue into service (service-centric)"
+    );
+    for device_name in &touched_devices {
+        if let Err(e) = crate::routes::devices::compile_device_config(
+            device_name,
+            &cfggen_base,
+            &state.config,
+        ) {
+            warn!(device = %device_name, error = %e, "Recompile after fold failed");
+        }
+    }
+    Redirect::to(&format!("/reconcile/services/{}", svc)).into_response()
+}
+
+// ── Service-centric helpers ──────────────────────────────────────────────────
+
+struct ServiceUsageRaw {
+    name: String,
+    devices: std::collections::HashSet<String>,
+    port_count: usize,
+    distinct_prologue_count: usize,
+}
+
+fn collect_service_usage(cfggen_base: &std::path::Path) -> Vec<ServiceUsageRaw> {
+    let mut usage: std::collections::HashMap<String, ServiceUsageRaw> =
+        std::collections::HashMap::new();
+    let mut prologues_per_service: std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    > = std::collections::HashMap::new();
+
+    walk_device_jsons(cfggen_base, |device_name, raw| {
+        if let Some(modules) = raw.get("modules").and_then(|v| v.as_array()) {
+            for module in modules {
+                if let Some(ports) = module.get("ports").and_then(|p| p.as_array()) {
+                    for port in ports {
+                        let svc = port
+                            .get("service")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if svc.is_empty() {
+                            continue;
+                        }
+                        let entry = usage.entry(svc.clone()).or_insert_with(|| ServiceUsageRaw {
+                            name: svc.clone(),
+                            devices: std::collections::HashSet::new(),
+                            port_count: 0,
+                            distinct_prologue_count: 0,
+                        });
+                        entry.devices.insert(device_name.to_string());
+                        entry.port_count += 1;
+                        let prologue_key = port
+                            .get("prologue")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "<null>".to_string());
+                        prologues_per_service
+                            .entry(svc)
+                            .or_default()
+                            .insert(prologue_key);
+                    }
+                }
+            }
+        }
+    });
+
+    for (svc, set) in prologues_per_service {
+        if let Some(entry) = usage.get_mut(&svc) {
+            entry.distinct_prologue_count = set.len();
+        }
+    }
+    usage.into_values().collect()
+}
+
+struct PrologueUsage {
+    prologue: String,
+    is_null: bool,
+    devices: Vec<(String, Vec<String>)>,
+}
+
+fn collect_service_prologues(cfggen_base: &std::path::Path, svc: &str) -> Vec<PrologueUsage> {
+    // prologue_text → device_name → ports
+    let mut buckets: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, Vec<String>>,
+    > = std::collections::BTreeMap::new();
+    let mut null_buckets: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+
+    walk_device_jsons(cfggen_base, |device_name, raw| {
+        if let Some(modules) = raw.get("modules").and_then(|v| v.as_array()) {
+            for module in modules {
+                if let Some(ports) = module.get("ports").and_then(|p| p.as_array()) {
+                    for port in ports {
+                        if port.get("service").and_then(|v| v.as_str()) != Some(svc) {
+                            continue;
+                        }
+                        let port_name = port
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("?")
+                            .to_string();
+                        match port.get("prologue").and_then(|v| v.as_str()) {
+                            Some(s) if !s.is_empty() => {
+                                buckets
+                                    .entry(s.to_string())
+                                    .or_default()
+                                    .entry(device_name.to_string())
+                                    .or_default()
+                                    .push(port_name);
+                            }
+                            _ => {
+                                null_buckets
+                                    .entry(device_name.to_string())
+                                    .or_default()
+                                    .push(port_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let mut out: Vec<PrologueUsage> = Vec::new();
+    for (prologue, devmap) in buckets {
+        let devices: Vec<(String, Vec<String>)> = devmap.into_iter().collect();
+        out.push(PrologueUsage {
+            prologue,
+            is_null: false,
+            devices,
+        });
+    }
+    if !null_buckets.is_empty() {
+        let devices: Vec<(String, Vec<String>)> = null_buckets.into_iter().collect();
+        out.push(PrologueUsage {
+            prologue: String::new(),
+            is_null: true,
+            devices,
+        });
+    }
+    out
+}
+
+fn walk_device_jsons(cfggen_base: &std::path::Path, mut cb: impl FnMut(&str, &serde_json::Value)) {
+    let dir = cfggen_base.join("logical-devices");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let (device_name, json_path) = if path.is_dir() {
+            let n = match path.file_name().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            (n, path.join("config.json"))
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let n = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            (n, path)
+        } else {
+            continue;
+        };
+        if !json_path.exists() {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&json_path) else { continue };
+        let Ok(raw): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
+            continue
+        };
+        cb(&device_name, &raw);
+    }
+}
+
+/// Set `prologue: null` on every port in `device_name` that uses
+/// (service, prologue). Writes the JSON back; logs and continues on
+/// individual errors.
+fn clear_prologue_for_device(
+    cfggen_base: &std::path::Path,
+    device_name: &str,
+    service: &str,
+    prologue: &str,
+) {
+    let flat = cfggen_base
+        .join("logical-devices")
+        .join(format!("{}.json", device_name));
+    let dir = cfggen_base
+        .join("logical-devices")
+        .join(device_name)
+        .join("config.json");
+    let json_path = if flat.exists() {
+        flat
+    } else if dir.exists() {
+        dir
+    } else {
+        return;
+    };
+    let Ok(content) = std::fs::read_to_string(&json_path) else { return };
+    let Ok(mut raw): Result<serde_json::Value, _> = serde_json::from_str(&content) else {
+        return
+    };
+    if let Some(modules) = raw.get_mut("modules").and_then(|v| v.as_array_mut()) {
+        for module in modules {
+            if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
+                for port in ports {
+                    let svc_matches = port.get("service").and_then(|v| v.as_str()) == Some(service);
+                    let prol_matches =
+                        port.get("prologue").and_then(|v| v.as_str()) == Some(prologue);
+                    if svc_matches && prol_matches {
+                        if let Some(obj) = port.as_object_mut() {
+                            obj.insert("prologue".to_string(), serde_json::Value::Null);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(new_content) = serde_json::to_string_pretty(&raw) {
+        let _ = std::fs::write(&json_path, new_content);
+    }
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<AppState> {
@@ -1580,5 +2082,11 @@ pub fn routes() -> Router<AppState> {
         .route(
             "/diff/{name}/reconcile/fold-prologue",
             get(fold_prologue_preview).post(fold_prologue_execute),
+        )
+        .route("/reconcile/services", get(services_index))
+        .route("/reconcile/services/{svc}", get(service_detail))
+        .route(
+            "/reconcile/services/{svc}/fold-prologue",
+            get(service_fold_preview).post(service_fold_execute),
         )
 }

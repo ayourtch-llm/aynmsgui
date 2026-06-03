@@ -1,0 +1,55 @@
+<h1 class="list-page-heading">Service: {{service}}</h1>
+<p>
+  <a href="/reconcile/services">← All services</a>
+</p>
+
+<div class="reconcile-summary">
+  <div><strong>Service file:</strong> <code>{{service_path}}</code></div>
+  <div><strong>Per-port prologues across fleet:</strong>
+       <strong>{{total_ports}}</strong> port(s) across <strong>{{total_devices}}</strong> device(s)</div>
+</div>
+
+<details style="margin: 12px 0;">
+  <summary>Current <code>port-config.txt</code></summary>
+  <pre style="background:#fafafa; border:1px solid #e3e3e3; border-radius:3px; padding:6px 10px;">{{port_config_preview}}</pre>
+</details>
+
+{{^has_rows}}
+<p style="color:#888;"><em>No ports reference this service.</em></p>
+{{/has_rows}}
+
+{{#has_rows}}
+<table class="reconcile-table">
+<thead>
+<tr>
+  <th>Prologue</th>
+  <th>Ports</th>
+  <th>Devices</th>
+  <th>Sample devices</th>
+  <th>Action</th>
+</tr>
+</thead>
+<tbody>
+{{#rows}}
+<tr class="{{#is_null}}rec-null-prologue{{/is_null}}">
+  <td>
+    {{#is_null}}<em style="color:#888;">{{prologue_display}}</em>{{/is_null}}
+    {{^is_null}}<code>{{prologue_display}}</code>{{/is_null}}
+  </td>
+  <td>{{port_count}}</td>
+  <td>{{device_count}}</td>
+  <td><code style="font-size:0.85em; color:#555;">{{devices_preview}}</code></td>
+  <td>
+    {{^is_null}}
+    <form method="GET" action="/reconcile/services/{{service}}/fold-prologue" style="display:inline;">
+      <input type="hidden" name="prologue" value="{{prologue}}">
+      <button type="submit" title="Move this line into {{service}}/port-config.txt and clear the prologue field on all matching ports">Fold into service …</button>
+    </form>
+    {{/is_null}}
+    {{#is_null}}<em style="color:#888;">already clean</em>{{/is_null}}
+  </td>
+</tr>
+{{/rows}}
+</tbody>
+</table>
+{{/has_rows}}

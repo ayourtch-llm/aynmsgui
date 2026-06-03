@@ -1,0 +1,28 @@
+<h1 class="list-page-heading">Service prologue reconciliation</h1>
+<p>
+  Per-service view of where each service's port assignments carry per-port prologues.
+  Pick a service to see all distinct prologues attached to it across every device, and
+  fold them into the service's <code>port-config.txt</code> with a single confirmation.
+</p>
+<p style="color:#666; font-size:0.9em;">
+  In-use services first ({{in_use_count}}), then unused services ({{unused_count}}). The
+  <em>Distinct prologues</em> column is the count of unique <code>prologue</code> values
+  attached to this service across the fleet — a high number is a strong candidate for cleanup.
+</p>
+{{> quicksearch}}
+<div class="table-scroll">
+<table id="{{quicksearch_table_id}}">
+<thead><tr><th>Service</th><th>Devices</th><th>Ports</th><th>Distinct prologues</th></tr></thead>
+<tbody>
+{{#rows}}
+<tr>
+  <td><a href="/reconcile/services/{{name}}">{{name}}</a></td>
+  <td>{{device_count}}</td>
+  <td>{{port_count}}</td>
+  <td>{{distinct_prologue_count}}</td>
+</tr>
+{{/rows}}
+</tbody>
+</table>
+</div>
+{{> colresize}}

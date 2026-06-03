@@ -41,10 +41,10 @@
 {{/total_devices}}
 
 <p style="margin-top:16px;">
-  <form method="POST" action="/diff/{{name}}/reconcile/fold-prologue" style="display:inline;">
+  <form method="POST" action="{{form_action}}" style="display:inline;">
     <input type="hidden" name="service" value="{{service}}">
     <input type="hidden" name="prologue" value="{{prologue}}">
     <button type="submit"{{^total_devices}} disabled{{/total_devices}}>Confirm fold</button>
   </form>
-  <a href="/diff/{{name}}/reconcile" style="margin-left:12px;">Cancel</a>
+  <a href="{{cancel_url}}" style="margin-left:12px;">Cancel</a>
 </p>

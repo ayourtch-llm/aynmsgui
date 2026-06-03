@@ -41,6 +41,8 @@ pub struct Templates {
     pub topology: mustache::Template,
     pub reconcile: mustache::Template,
     pub reconcile_fold_preview: mustache::Template,
+    pub reconcile_services_index: mustache::Template,
+    pub reconcile_service_detail: mustache::Template,
     /// Generic title + message page (used for errors, conflicts, simple results).
     pub message: mustache::Template,
 }
@@ -78,6 +80,8 @@ impl Templates {
             topology: load("topology")?,
             reconcile: load("reconcile")?,
             reconcile_fold_preview: load("reconcile_fold_preview")?,
+            reconcile_services_index: load("reconcile_services_index")?,
+            reconcile_service_detail: load("reconcile_service_detail")?,
             message: load("message")?,
         })
     }

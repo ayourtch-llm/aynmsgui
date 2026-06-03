@@ -239,6 +239,13 @@ struct DriftLineCtx {
     /// outside any interface block).
     current_service: String,
     has_port: bool,
+    /// If the import matcher found a better-fitting service for this
+    /// port (the device's actual body matches it byte-for-byte after
+    /// normalization), surface the swap as an inline action. When set,
+    /// the operator's first-choice is "swap the port" — absorbing
+    /// drift into the wrong assigned service would be wrong.
+    suggested_service: String,
+    has_suggestion: bool,
 }
 
 #[derive(Serialize)]
@@ -667,6 +674,10 @@ pub async fn reconcile_detail(
                 module_idx,
                 current_service,
                 has_port,
+                // Filled in after the port_groups loop runs (we need
+                // the matcher result first).
+                suggested_service: String::new(),
+                has_suggestion: false,
             });
             continue;
         }
@@ -829,6 +840,28 @@ pub async fn reconcile_detail(
             .then_with(|| natural_compare_port(&a.port_name, &b.port_name))
             .then_with(|| natural_compare_port(&a.derived_interface, &b.derived_interface))
     });
+
+    // Backfill drift_lines with the matcher's suggestion per port.
+    // Operators reading the drift section then see "swap this port"
+    // alongside (or instead of) "absorb the line into the assigned
+    // service" — usually the swap is the right answer.
+    let mut iface_to_suggestion: HashMap<String, String> = HashMap::new();
+    for g in &port_groups {
+        if g.has_suggestion {
+            iface_to_suggestion.insert(
+                format!("interface {}", g.derived_interface),
+                g.suggested_service.clone(),
+            );
+        }
+    }
+    for d in &mut drift_lines {
+        if let Some(svc) = iface_to_suggestion.get(&d.interface_ctx) {
+            if !svc.is_empty() && svc != &d.current_service {
+                d.suggested_service = svc.clone();
+                d.has_suggestion = true;
+            }
+        }
+    }
 
     let mut svi_groups: Vec<SviGroupCtx> = svi_groups_map
         .into_values()

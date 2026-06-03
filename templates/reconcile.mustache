@@ -164,12 +164,21 @@
   </td>
   <td>
     {{#has_port}}
+    {{#has_suggestion}}
+    <form method="GET" action="/diff/{{name}}/reconcile" style="display:inline;">
+      <input type="hidden" name="try_module" value="{{module_idx}}">
+      <input type="hidden" name="try_port" value="{{port_name}}">
+      <input type="hidden" name="try_service" value="{{suggested_service}}">
+      <button type="submit" title="The device's body for this port matches {{suggested_service}} exactly. Previewing this swap likely resolves every drift line on this port at once.">Swap port to {{suggested_service}}</button>
+    </form>
+    <br>
+    {{/has_suggestion}}
     <form method="POST" action="/diff/{{name}}/reconcile/absorb" style="display:inline;">
       <input type="hidden" name="module_idx" value="{{module_idx}}">
       <input type="hidden" name="port_name" value="{{port_name}}">
       <input type="hidden" name="service" value="{{current_service}}">
       <input type="hidden" name="command" value="{{bare_cmd}}">
-      <button type="submit" title="Append this command to {{current_service}}/port-config.txt">Absorb into {{current_service}}</button>
+      <button type="submit" title="Append this single command to {{current_service}}/port-config.txt — use when only this one line is missing from the assigned service, not when the whole port body suggests a different service.">Absorb into {{current_service}}</button>
     </form>
     {{/has_port}}
   </td>

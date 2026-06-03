@@ -250,6 +250,22 @@ struct SviGroupCtx {
     line_count: usize,
 }
 
+#[derive(Serialize)]
+struct DriftPortGroupCtx {
+    interface_ctx: String,
+    port_name: String,
+    module_idx: usize,
+    current_service: String,
+    /// True when the import matcher found a service whose body matches
+    /// this port's device-side body. Shows a single "Swap port to <svc>"
+    /// button at the top of the group — collapses every drift line in
+    /// one click rather than absorbing them one at a time.
+    has_suggestion: bool,
+    suggested_service: String,
+    lines: Vec<DriftLineCtx>,
+    line_count: usize,
+}
+
 #[derive(Serialize, Clone)]
 struct DriftLineCtx {
     /// Full delta line, with the leading "no " preserved.
@@ -314,8 +330,16 @@ struct ReconcileCtx {
     has_port_groups: bool,
     svi_groups: Vec<SviGroupCtx>,
     has_svi_groups: bool,
-    drift_lines: Vec<DriftLineCtx>,
-    has_drift_lines: bool,
+    /// Drift lines grouped by the port they sit under. Each group
+    /// surfaces the matcher's suggested swap once at the top + the
+    /// per-line absorb actions.
+    drift_port_groups: Vec<DriftPortGroupCtx>,
+    has_drift_port_groups: bool,
+    /// Drift lines that sit outside any interface block (top-level
+    /// commands the device has but the template doesn't). These get
+    /// the splice-into-template action.
+    drift_unscoped: Vec<DriftLineCtx>,
+    has_drift_unscoped: bool,
     other_lines: Vec<ReconcileLineCtx>,
     has_other_lines: bool,
 }
@@ -1141,6 +1165,43 @@ pub async fn reconcile_detail(
         .collect();
     svi_groups.sort_by(|a, b| a.service.cmp(&b.service));
 
+    // Group drift_lines by their port. Lines with no port context land
+    // in drift_unscoped (top-level commands → splice-into-template flow).
+    let mut drift_port_groups_map: HashMap<String, DriftPortGroupCtx> = HashMap::new();
+    let mut drift_unscoped: Vec<DriftLineCtx> = Vec::new();
+    for d in drift_lines.into_iter() {
+        if !d.has_port || d.interface_ctx.is_empty() {
+            drift_unscoped.push(d);
+            continue;
+        }
+        let key = d.interface_ctx.clone();
+        let entry = drift_port_groups_map
+            .entry(key.clone())
+            .or_insert_with(|| DriftPortGroupCtx {
+                interface_ctx: d.interface_ctx.clone(),
+                port_name: d.port_name.clone(),
+                module_idx: d.module_idx,
+                current_service: d.current_service.clone(),
+                has_suggestion: d.has_suggestion,
+                suggested_service: d.suggested_service.clone(),
+                lines: Vec::new(),
+                line_count: 0,
+            });
+        entry.lines.push(d);
+    }
+    let mut drift_port_groups: Vec<DriftPortGroupCtx> = drift_port_groups_map
+        .into_values()
+        .map(|mut g| {
+            g.line_count = g.lines.len();
+            g
+        })
+        .collect();
+    drift_port_groups.sort_by(|a, b| {
+        a.module_idx
+            .cmp(&b.module_idx)
+            .then_with(|| natural_compare_port(&a.port_name, &b.port_name))
+    });
+
     let device_name = lookup_logical_device_name(&cfggen_base, &name);
     let hostname = lookup_hostname(&state, &cfggen_base, &name).await;
 
@@ -1177,7 +1238,8 @@ pub async fn reconcile_detail(
         hostname,
         has_delta: !port_groups.is_empty()
             || !svi_groups.is_empty()
-            || !drift_lines.is_empty()
+            || !drift_port_groups.is_empty()
+            || !drift_unscoped.is_empty()
             || !other_lines.is_empty(),
         affected_services: affected_services_set.len(),
         resolved_count: resolved,
@@ -1194,8 +1256,10 @@ pub async fn reconcile_detail(
         port_groups,
         has_svi_groups: !svi_groups.is_empty(),
         svi_groups,
-        has_drift_lines: !drift_lines.is_empty(),
-        drift_lines,
+        has_drift_port_groups: !drift_port_groups.is_empty(),
+        drift_port_groups,
+        has_drift_unscoped: !drift_unscoped.is_empty(),
+        drift_unscoped,
         has_other_lines: !other_lines.is_empty(),
         other_lines,
     };

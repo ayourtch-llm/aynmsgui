@@ -144,51 +144,74 @@
 {{/svi_groups}}
 {{/has_svi_groups}}
 
-{{#has_drift_lines}}
-<h2>Drift — currently on device but not in target</h2>
+{{#has_drift_port_groups}}
+<h2>Drift — per-port</h2>
 <p style="color:#666; font-size:0.9em;">
-  These are commands that the device actually has running but the target config doesn't
-  include — so the next apply would negate them. (The transition generator emits each one
-  prefixed with <code>no</code>; we show the underlying command here so absorbing into a
-  service is byte-for-byte the same as what gets written.) Click
-  <em>Absorb into service</em> to append the command to the inferred port's service so
-  the target keeps it and the drift disappears.
+  Commands the device has running but the target's services don't include. Grouped by
+  interface so you can fix the whole block in one go — <em>Swap port</em> when the
+  matcher found a better-fitting service (collapses every drift line below in one
+  click), or <em>Absorb</em> a single line into the port's currently-assigned service.
 </p>
-<table class="reconcile-table">
-<thead><tr><th>Command on device</th><th>Negation emitted by transition</th><th>Inferred port → service</th><th>Action</th></tr></thead>
-<tbody>
-{{#drift_lines}}
-<tr class="rec-remove">
-  <td><pre class="rec-line">{{bare_cmd}}</pre></td>
-  <td><code style="color:#888; font-size:0.85em;">{{full_text}}</code></td>
-  <td>
-    {{#has_port}}
-    <code>{{port_name}}</code> · <code>{{current_service}}</code>
-    {{/has_port}}
-    {{^has_port}}
-    <em style="color:#888;">no port context (drift outside interface block)</em>
-    {{/has_port}}
-  </td>
-  <td>
-    {{#has_port}}
-    {{#has_suggestion}}
+{{#drift_port_groups}}
+<details class="port-group" open>
+  <summary>
+    <strong>{{interface_ctx}}</strong>
+    &nbsp;·&nbsp; <code>{{port_name}}</code>
+    &nbsp;·&nbsp; current service: <code>{{current_service}}</code>
+    &nbsp;·&nbsp; {{line_count}} drift line(s)
+  </summary>
+  {{#has_suggestion}}
+  <p style="margin: 6px 0;">
     <form method="GET" action="/diff/{{name}}/reconcile" style="display:inline;">
       <input type="hidden" name="try_module" value="{{module_idx}}">
       <input type="hidden" name="try_port" value="{{port_name}}">
       <input type="hidden" name="try_service" value="{{suggested_service}}">
-      <button type="submit" title="The device's body for this port matches {{suggested_service}} exactly. Previewing this swap likely resolves every drift line on this port at once.">Swap port to {{suggested_service}}</button>
+      <button type="submit" title="The device's body for this port matches {{suggested_service}} exactly. Previewing this swap collapses every drift line below in one go.">Swap port to {{suggested_service}}</button>
     </form>
-    <br>
-    {{/has_suggestion}}
-    <form method="POST" action="/diff/{{name}}/reconcile/absorb" style="display:inline;">
-      <input type="hidden" name="module_idx" value="{{module_idx}}">
-      <input type="hidden" name="port_name" value="{{port_name}}">
-      <input type="hidden" name="service" value="{{current_service}}">
-      <input type="hidden" name="command" value="{{bare_cmd}}">
-      <button type="submit" title="Append this single command to {{current_service}}/port-config.txt — use when only this one line is missing from the assigned service, not when the whole port body suggests a different service.">Absorb into {{current_service}}</button>
-    </form>
-    {{/has_port}}
-    {{^has_port}}
+    <span style="color:#666; font-size:0.9em; margin-left:8px;">
+      The device's body matches <code>{{suggested_service}}</code> exactly — one swap clears all {{line_count}} drift line(s) below.
+    </span>
+  </p>
+  {{/has_suggestion}}
+  <table class="reconcile-table">
+    <thead><tr><th>Command on device</th><th>Negation emitted by transition</th><th>Absorb</th></tr></thead>
+    <tbody>
+    {{#lines}}
+    <tr class="rec-remove">
+      <td><pre class="rec-line">{{bare_cmd}}</pre></td>
+      <td><code style="color:#888; font-size:0.85em;">{{full_text}}</code></td>
+      <td>
+        <form method="POST" action="/diff/{{name}}/reconcile/absorb" style="display:inline;">
+          <input type="hidden" name="module_idx" value="{{module_idx}}">
+          <input type="hidden" name="port_name" value="{{port_name}}">
+          <input type="hidden" name="service" value="{{current_service}}">
+          <input type="hidden" name="command" value="{{bare_cmd}}">
+          <button type="submit" title="Append this single command to {{current_service}}/port-config.txt — use when only this one line is missing from the assigned service.">Absorb into {{current_service}}</button>
+        </form>
+      </td>
+    </tr>
+    {{/lines}}
+    </tbody>
+  </table>
+</details>
+{{/drift_port_groups}}
+{{/has_drift_port_groups}}
+
+{{#has_drift_unscoped}}
+<h2>Top-level drift (no interface context)</h2>
+<p style="color:#666; font-size:0.9em;">
+  Commands the device has running but that don't sit inside any interface block. Use
+  <em>Splice into template</em> to insert the line into <code>{{name}}</code>'s .conf
+  template right after the nearest device-matching anchor — recompiles locally.
+</p>
+<table class="reconcile-table">
+<thead><tr><th>Command on device</th><th>Negation emitted by transition</th><th>Action</th></tr></thead>
+<tbody>
+{{#drift_unscoped}}
+<tr class="rec-remove">
+  <td><pre class="rec-line">{{bare_cmd}}</pre></td>
+  <td><code style="color:#888; font-size:0.85em;">{{full_text}}</code></td>
+  <td>
     {{#can_splice}}
     <form method="POST" action="/diff/{{name}}/reconcile/splice-template" style="display:inline;"
           onsubmit="return confirm('Insert this line into {{splice_template_path}} after line {{splice_after_line}}, then recompile? Local edit only.');">
@@ -198,13 +221,12 @@
       <button type="submit" title="Insert this command into {{splice_template_path}} {{#splice_anchor}}right after `{{splice_anchor}}` (line {{splice_after_line}}){{/splice_anchor}}{{^splice_anchor}}at the end of file{{/splice_anchor}}">Splice into template</button>
     </form>
     {{/can_splice}}
-    {{/has_port}}
   </td>
 </tr>
-{{/drift_lines}}
+{{/drift_unscoped}}
 </tbody>
 </table>
-{{/has_drift_lines}}
+{{/has_drift_unscoped}}
 
 {{#has_other_lines}}
 <h2>Other delta lines (template, structural, unresolved)</h2>

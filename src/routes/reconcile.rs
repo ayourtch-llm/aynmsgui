@@ -234,6 +234,13 @@ struct PortGroupCtx {
     /// form pointing at /swap.
     is_previewing: bool,
     previewing_service: String,
+    /// True when this panel exists ONLY because the preview included
+    /// it as a swap and the resulting projected delta is zero (no
+    /// adds or drift left). Without this flag the panel would
+    /// disappear from the page and the operator couldn't untick the
+    /// swap or alter it — leading to a "ping-pong" where Update
+    /// preview keeps dropping perfect-match swaps.
+    resolves_in_preview: bool,
     /// Best-fit service for this port's *current device-side* body, looked
     /// up via the same matcher that aycfggen's import flow uses
     /// (match_port_body_to_existing_service). When this is non-empty AND
@@ -911,6 +918,7 @@ pub async fn reconcile_detail(
                             has_suggestion: suggestion_for_this.is_some(),
                             has_prologue,
                             prologue_text,
+                            resolves_in_preview: false,
                         }
                     });
                 group.lines.push(line_ctx);
@@ -940,6 +948,7 @@ pub async fn reconcile_detail(
                         has_suggestion: false,
                         has_prologue: false,
                         prologue_text: String::new(),
+                        resolves_in_preview: false,
                     });
                 group.lines.push(line_ctx);
             }
@@ -973,6 +982,102 @@ pub async fn reconcile_detail(
     // Per-port drift now lands in port_groups via the walked loop
     // (as a remove-direction ReconcileLineCtx), so a drift-only port
     // automatically has a group entry — no separate backfill needed.
+    //
+    // BUT: a swap currently being previewed whose projected delta is
+    // *zero* leaves no events in walked, so its port has no group
+    // entry. Without a panel the operator can't untick the swap or
+    // see that it's pending — and Update preview would silently drop
+    // it because the JS only reads currently-rendered checkboxes
+    // (the "ping-pong" the operator was seeing). Create a stub group
+    // for every applied_swap whose port isn't already represented.
+    for (mod_idx, port_name, _new_service) in &applied_swaps {
+        let iface_text = iface_to_port.iter().find_map(|(iface, (mi, pn, _))| {
+            if mi == mod_idx && pn == port_name {
+                Some(iface.clone())
+            } else {
+                None
+            }
+        });
+        let Some(iface_text) = iface_text else {
+            continue;
+        };
+        if port_groups_map.contains_key(&iface_text) {
+            continue;
+        }
+        let Some(IfaceKind::JsonPort {
+            module_idx,
+            port_name: pn_in_kind,
+            derived_interface,
+        }) = iface_kinds.get(&iface_text)
+        else {
+            continue;
+        };
+        let port_assign = real_config
+            .modules
+            .get(*module_idx)
+            .and_then(|m| m.as_ref())
+            .and_then(|m| m.ports.iter().find(|p| &p.name == pn_in_kind));
+        let current_service = port_assign
+            .map(|p| p.service.clone())
+            .unwrap_or_default();
+        let prologue_text = port_assign
+            .and_then(|p| p.prologue.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        let has_prologue = !prologue_text.is_empty();
+        let preview_for_this = applied_swaps
+            .iter()
+            .find(|(m, p, _)| m == module_idx && p == pn_in_kind)
+            .map(|(_, _, s)| s.clone());
+        let suggestion_for_this = port_suggestions
+            .get(&format!("interface {}", derived_interface))
+            .cloned()
+            .filter(|s| !s.is_empty() && s != &current_service);
+        let selected_service = preview_for_this
+            .clone()
+            .or_else(|| suggestion_for_this.clone())
+            .unwrap_or_else(|| current_service.clone());
+        let service_options: Vec<ServiceOptionCtx> = available_services
+            .iter()
+            .map(|svc| {
+                let is_suggested = suggestion_for_this
+                    .as_ref()
+                    .map(|s| s == svc)
+                    .unwrap_or(false);
+                let is_current = svc == &current_service;
+                ServiceOptionCtx {
+                    name: svc.clone(),
+                    selected: svc == &selected_service,
+                    is_suggested,
+                    is_current,
+                    prefix: service_option_prefix(is_current, is_suggested),
+                }
+            })
+            .collect();
+        port_groups_map.insert(
+            iface_text,
+            PortGroupCtx {
+                module_idx: *module_idx,
+                port_name: pn_in_kind.clone(),
+                derived_interface: derived_interface.clone(),
+                current_service,
+                service_options,
+                lines: Vec::new(),
+                line_count: 0,
+                is_json_port: true,
+                is_template_port: false,
+                template_path: String::new(),
+                template_line: 0,
+                is_previewing: preview_for_this.is_some(),
+                previewing_service: preview_for_this.unwrap_or_default(),
+                suggested_service: suggestion_for_this.clone().unwrap_or_default(),
+                has_suggestion: suggestion_for_this.is_some(),
+                has_prologue,
+                prologue_text,
+                resolves_in_preview: true,
+            },
+        );
+    }
 
     // Finalize port groups: compute line_count and sort. Matcher
     // suggestion is now populated inline at construction time so the

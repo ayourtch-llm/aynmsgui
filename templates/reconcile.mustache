@@ -135,6 +135,12 @@
     {{/lines}}
     </tbody>
   </table>
+  {{#resolves_in_preview}}
+  <p style="color:#1b5e20; font-weight:600; margin: 6px 0;">
+    ✓ This swap resolves every delta line on this port. Untick to drop it from the
+    preview; <em>Update preview</em> to recompute.
+  </p>
+  {{/resolves_in_preview}}
 </details>
 {{/port_groups}}
 {{/has_port_groups}}

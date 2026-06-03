@@ -804,6 +804,82 @@ pub async fn reconcile_detail(
     // suggestion for the swap dropdown.
     let current_port_bodies = parse_interface_bodies(&current_tree);
 
+    // Drift-only ports (where every delta line was a Remove, nothing
+    // landed in port_groups_map during the events loop) still need a
+    // group so the matcher can run and the swap suggestion surfaces.
+    // Most common case: device has just a description difference vs
+    // target — the entire delta for that port is a single drift line,
+    // but a different service would zero it out.
+    for d in &drift_lines {
+        if d.interface_ctx.is_empty() {
+            continue;
+        }
+        if port_groups_map.contains_key(&d.interface_ctx) {
+            continue;
+        }
+        if let Some(IfaceKind::JsonPort {
+            module_idx,
+            port_name,
+            derived_interface,
+        }) = iface_kinds.get(&d.interface_ctx)
+        {
+            let port_assign = real_config
+                .modules
+                .get(*module_idx)
+                .and_then(|m| m.as_ref())
+                .and_then(|m| m.ports.iter().find(|p| &p.name == port_name));
+            let current_service = port_assign
+                .map(|p| p.service.clone())
+                .unwrap_or_default();
+            let prologue_text = port_assign
+                .and_then(|p| p.prologue.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default();
+            let has_prologue = !prologue_text.is_empty();
+            let is_previewing = is_preview
+                && preview_module_idx == *module_idx
+                && preview_port_name == *port_name;
+            let selected_service = if is_previewing {
+                preview_service.clone()
+            } else {
+                current_service.clone()
+            };
+            let service_options: Vec<ServiceOptionCtx> = available_services
+                .iter()
+                .map(|svc| ServiceOptionCtx {
+                    name: svc.clone(),
+                    selected: svc == &selected_service,
+                })
+                .collect();
+            port_groups_map.insert(
+                d.interface_ctx.clone(),
+                PortGroupCtx {
+                    module_idx: *module_idx,
+                    port_name: port_name.clone(),
+                    derived_interface: derived_interface.clone(),
+                    current_service,
+                    service_options,
+                    lines: Vec::new(),
+                    line_count: 0,
+                    is_json_port: true,
+                    is_template_port: false,
+                    template_path: String::new(),
+                    template_line: 0,
+                    is_previewing,
+                    previewing_service: if is_previewing {
+                        preview_service.clone()
+                    } else {
+                        String::new()
+                    },
+                    suggested_service: String::new(),
+                    has_suggestion: false,
+                    has_prologue,
+                    prologue_text,
+                },
+            );
+        }
+    }
+
     // Finalize port groups: compute line_count, run the matcher, sort.
     let mut port_groups: Vec<PortGroupCtx> = port_groups_map
         .into_values()

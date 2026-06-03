@@ -10,15 +10,29 @@
 {{#is_preview}}
 <div class="reconcile-preview-banner">
   <strong>Preview mode:</strong> {{preview_banner}}.
-  Numbers below are the projected delta if you apply this swap.
-  <form method="POST" action="/diff/{{name}}/reconcile/swap" style="display:inline; margin-left:12px;">
-    <input type="hidden" name="module_idx" value="{{preview_module_idx}}">
-    <input type="hidden" name="port_name" value="{{preview_port_name}}">
-    <input type="hidden" name="service" value="{{preview_service}}">
-    <button type="submit">Commit swap</button>
+  Numbers below are the projected delta if you apply these swaps.
+  <form method="POST" action="/diff/{{name}}/reconcile/swap-multi" style="display:inline; margin-left:12px;">
+    {{#pending_swap_entries}}
+    <input type="hidden" name="{{field_name}}" value="{{service}}">
+    {{/pending_swap_entries}}
+    <button type="submit">Commit {{pending_swap_count}} swap(s)</button>
   </form>
   <a href="/diff/{{name}}/reconcile" style="margin-left:8px;">Cancel preview</a>
 </div>
+{{/is_preview}}
+
+{{^is_preview}}
+{{#has_port_groups}}
+<div class="reconcile-multi-bar">
+  <strong>Multi-swap:</strong>
+  Tick the checkbox in any port panel below, then —
+  <button type="button" id="multi-preview-btn" disabled>Preview 0 selected swap(s)</button>
+  <button type="button" id="multi-clear-btn">Clear selection</button>
+  <span style="color:#666; font-size:0.9em; margin-left:8px;">
+    Uses the value picked in each panel's dropdown.
+  </span>
+</div>
+{{/has_port_groups}}
 {{/is_preview}}
 
 {{^has_delta}}
@@ -57,17 +71,22 @@
     {{/is_previewing}}
   </summary>
   {{#is_json_port}}
-  <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-form">
+  <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-form"
+        data-module="{{module_idx}}" data-port="{{port_name}}">
     <input type="hidden" name="try_module" value="{{module_idx}}">
     <input type="hidden" name="try_port" value="{{port_name}}">
     <label>Try alternate service:
-      <select name="try_service">
+      <select name="try_service" class="port-multi-select">
         {{#service_options}}
         <option value="{{name}}"{{#selected}} selected{{/selected}}>{{name}}</option>
         {{/service_options}}
       </select>
     </label>
     <button type="submit">Preview swap</button>
+    &nbsp;·&nbsp;
+    <label title="Tick to add this port's swap to a multi-preview batch (uses the dropdown value)">
+      <input type="checkbox" class="port-multi-include"> include in multi-preview
+    </label>
   </form>
   {{#has_suggestion}}
   <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-suggestion-form">
@@ -217,3 +236,42 @@
 {{/has_delta}}
 
 <p style="margin-top:18px;"><a href="/diff">← Back to overview</a></p>
+
+<script>
+(function () {
+  var btn = document.getElementById("multi-preview-btn");
+  var clearBtn = document.getElementById("multi-clear-btn");
+  if (!btn) return;  // page is in preview mode; the bar isn't rendered
+
+  function refresh() {
+    var n = document.querySelectorAll(".port-multi-include:checked").length;
+    btn.textContent = "Preview " + n + " selected swap(s)";
+    btn.disabled = n === 0;
+  }
+  document.querySelectorAll(".port-multi-include").forEach(function (cb) {
+    cb.addEventListener("change", refresh);
+  });
+  btn.addEventListener("click", function () {
+    var url = new URL(window.location.pathname, window.location.origin);
+    document.querySelectorAll(".port-multi-include:checked").forEach(function (cb) {
+      var form = cb.closest("form.port-group-form");
+      if (!form) return;
+      var module = form.dataset.module;
+      var port = form.dataset.port;
+      var select = form.querySelector("select.port-multi-select");
+      if (!select || !select.value) return;
+      url.searchParams.append("swap_" + module + "_" + port, select.value);
+    });
+    window.location.href = url.toString();
+  });
+  if (clearBtn) {
+    clearBtn.addEventListener("click", function () {
+      document.querySelectorAll(".port-multi-include:checked").forEach(function (cb) {
+        cb.checked = false;
+      });
+      refresh();
+    });
+  }
+  refresh();
+})();
+</script>

@@ -166,6 +166,15 @@ struct ReconcileLineCtx {
 }
 
 #[derive(Serialize)]
+struct PendingSwapEntry {
+    module_idx: usize,
+    port_name: String,
+    service: String,
+    /// e.g. "swap_0_Port12" — hidden-input name for the multi-commit form.
+    field_name: String,
+}
+
+#[derive(Serialize)]
 struct ServiceOptionCtx {
     name: String,
     selected: bool,
@@ -276,6 +285,12 @@ struct ReconcileCtx {
     preview_module_idx: usize,
     preview_port_name: String,
     preview_service: String,
+    /// One entry per currently-pending swap (single OR multi-swap
+    /// preview). The template renders these as hidden inputs in the
+    /// "Commit all swaps" form so the operator can apply the whole
+    /// batch atomically.
+    pending_swap_entries: Vec<PendingSwapEntry>,
+    pending_swap_count: usize,
     port_groups: Vec<PortGroupCtx>,
     has_port_groups: bool,
     svi_groups: Vec<SviGroupCtx>,
@@ -380,8 +395,43 @@ impl LogicalDeviceSource for OverrideLogicalDeviceSource<'_> {
 pub async fn reconcile_detail(
     State(state): State<AppState>,
     Path(name): Path<String>,
-    Query(try_params): Query<TryParams>,
+    Query(qmap): Query<HashMap<String, String>>,
 ) -> Response {
+    // Two formats supported:
+    //   - Single-swap:  ?try_module=N&try_port=...&try_service=...   (legacy)
+    //   - Multi-swap:   ?swap_<module>_<port>=<service>              (one per port)
+    // Multi-swap takes precedence when any swap_* key is present;
+    // otherwise we fall back to the single-swap form so existing
+    // per-port "Preview swap" buttons keep working unchanged.
+    let mut pending_swaps: Vec<(usize, String, String)> = Vec::new();
+    for (k, v) in &qmap {
+        if let Some(rest) = k.strip_prefix("swap_") {
+            if let Some(sep) = rest.find('_') {
+                let (mod_str, port_with_us) = rest.split_at(sep);
+                let port = &port_with_us[1..];
+                if let Ok(mi) = mod_str.parse::<usize>() {
+                    if !v.is_empty() {
+                        pending_swaps.push((mi, port.to_string(), v.clone()));
+                    }
+                }
+            }
+        }
+    }
+    if pending_swaps.is_empty() {
+        let try_module = qmap.get("try_module").and_then(|s| s.parse::<usize>().ok());
+        let try_port = qmap.get("try_port").cloned();
+        let try_service = qmap.get("try_service").cloned();
+        if let (Some(mi), Some(pn), Some(sv)) = (try_module, try_port, try_service) {
+            if !sv.is_empty() {
+                pending_swaps.push((mi, pn, sv));
+            }
+        }
+    }
+    let try_params = TryParams {
+        try_module: pending_swaps.first().map(|(m, _, _)| *m),
+        try_port: pending_swaps.first().map(|(_, p, _)| p.clone()),
+        try_service: pending_swaps.first().map(|(_, _, s)| s.clone()),
+    };
     let cfggen_base = match &state.config.cfggen_base_dir {
         Some(p) if p.exists() => p.clone(),
         _ => return message(&state, "Reconcile not configured", "cfggen_base_dir is unset", None),
@@ -432,33 +482,54 @@ pub async fn reconcile_detail(
 
     let available_services = load_available_services(&cfggen_base);
 
-    // Build the override config if try_* params are set and validate the swap.
-    let (is_preview, preview_module_idx, preview_port_name, preview_service, override_config) =
-        match (&try_params.try_module, &try_params.try_port, &try_params.try_service) {
-            (Some(m), Some(p), Some(s)) => {
-                let mut cfg = real_config.clone();
-                let mut applied = false;
-                if let Some(Some(module)) = cfg.modules.get_mut(*m) {
-                    for port in &mut module.ports {
-                        if port.name == *p {
-                            port.service = s.clone();
-                            applied = true;
-                            break;
-                        }
+    // Build the override config by applying every pending swap. Tracks
+    // exactly which (module, port) pairs are part of this preview so
+    // the template can mark each one separately and show a per-swap
+    // commit form below.
+    let mut applied_swaps: Vec<(usize, String, String)> = Vec::new();
+    let override_config = if pending_swaps.is_empty() {
+        None
+    } else {
+        let mut cfg = real_config.clone();
+        for (m, p, s) in &pending_swaps {
+            let mut applied = false;
+            if let Some(Some(module)) = cfg.modules.get_mut(*m) {
+                for port in &mut module.ports {
+                    if &port.name == p {
+                        port.service = s.clone();
+                        applied = true;
+                        break;
                     }
                 }
-                if applied {
-                    (true, *m, p.clone(), s.clone(), Some(cfg))
-                } else {
-                    warn!(
-                        device = %name, module_idx = m, port = %p,
-                        "try_* params point at a port that doesn't exist; rendering normally"
-                    );
-                    (false, 0, String::new(), String::new(), None)
-                }
             }
-            _ => (false, 0, String::new(), String::new(), None),
-        };
+            if applied {
+                applied_swaps.push((*m, p.clone(), s.clone()));
+            } else {
+                warn!(
+                    device = %name, module_idx = m, port = %p,
+                    "pending swap points at a non-existent port; skipping"
+                );
+            }
+        }
+        if applied_swaps.is_empty() {
+            None
+        } else {
+            Some(cfg)
+        }
+    };
+    let is_preview = !applied_swaps.is_empty();
+    // Legacy single-swap context fields used in scattered template/UI
+    // bits — set to the first applied swap for back-compat.
+    let preview_module_idx = applied_swaps.first().map(|(m, _, _)| *m).unwrap_or(0);
+    let preview_port_name = applied_swaps
+        .first()
+        .map(|(_, p, _)| p.clone())
+        .unwrap_or_default();
+    let preview_service = applied_swaps
+        .first()
+        .map(|(_, _, s)| s.clone())
+        .unwrap_or_default();
+    let _ = try_params;
 
     // Compile (with or without override).
     let traced_result = if let Some(override_cfg) = override_config.as_ref() {
@@ -723,14 +794,18 @@ pub async fn reconcile_detail(
                             .filter(|s| !s.is_empty())
                             .unwrap_or_default();
                         let has_prologue = !prologue_text.is_empty();
-                        let is_previewing = is_preview
-                            && preview_module_idx == *module_idx
-                            && preview_port_name == *port_name;
-                        let selected_service = if is_previewing {
-                            preview_service.clone()
-                        } else {
-                            current_service.clone()
-                        };
+                        // Multi-swap aware: a port group is "previewing"
+                        // if any applied swap targets this (module, port);
+                        // the preview's selected service comes from that
+                        // swap's `to` value.
+                        let preview_for_this = applied_swaps
+                            .iter()
+                            .find(|(m, p, _)| m == module_idx && p == port_name)
+                            .map(|(_, _, s)| s.clone());
+                        let is_previewing = preview_for_this.is_some();
+                        let selected_service = preview_for_this
+                            .clone()
+                            .unwrap_or_else(|| current_service.clone());
                         let service_options: Vec<ServiceOptionCtx> = available_services
                             .iter()
                             .map(|svc| ServiceOptionCtx {
@@ -751,11 +826,7 @@ pub async fn reconcile_detail(
                             template_path: String::new(),
                             template_line: 0,
                             is_previewing,
-                            previewing_service: if is_previewing {
-                                preview_service.clone()
-                            } else {
-                                String::new()
-                            },
+                            previewing_service: preview_for_this.unwrap_or_default(),
                             suggested_service: String::new(),
                             has_suggestion: false,
                             has_prologue,
@@ -851,14 +922,14 @@ pub async fn reconcile_detail(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_default();
             let has_prologue = !prologue_text.is_empty();
-            let is_previewing = is_preview
-                && preview_module_idx == *module_idx
-                && preview_port_name == *port_name;
-            let selected_service = if is_previewing {
-                preview_service.clone()
-            } else {
-                current_service.clone()
-            };
+            let preview_for_this = applied_swaps
+                .iter()
+                .find(|(m, p, _)| m == module_idx && p == port_name)
+                .map(|(_, _, s)| s.clone());
+            let is_previewing = preview_for_this.is_some();
+            let selected_service = preview_for_this
+                .clone()
+                .unwrap_or_else(|| current_service.clone());
             let service_options: Vec<ServiceOptionCtx> = available_services
                 .iter()
                 .map(|svc| ServiceOptionCtx {
@@ -881,11 +952,7 @@ pub async fn reconcile_detail(
                     template_path: String::new(),
                     template_line: 0,
                     is_previewing,
-                    previewing_service: if is_previewing {
-                        preview_service.clone()
-                    } else {
-                        String::new()
-                    },
+                    previewing_service: preview_for_this.unwrap_or_default(),
                     suggested_service: String::new(),
                     has_suggestion: false,
                     has_prologue,
@@ -1024,13 +1091,31 @@ pub async fn reconcile_detail(
     let hostname = lookup_hostname(&state, &cfggen_base, &name).await;
 
     let preview_banner = if is_preview {
-        format!(
-            "Previewing: port {} on service {} (not yet committed)",
-            preview_port_name, preview_service
-        )
+        if applied_swaps.len() == 1 {
+            format!(
+                "Previewing: port {} on service {} (not yet committed)",
+                preview_port_name, preview_service
+            )
+        } else {
+            format!(
+                "Previewing {} swap(s) (not yet committed)",
+                applied_swaps.len()
+            )
+        }
     } else {
         String::new()
     };
+
+    let pending_swap_entries: Vec<PendingSwapEntry> = applied_swaps
+        .iter()
+        .map(|(m, p, s)| PendingSwapEntry {
+            module_idx: *m,
+            port_name: p.clone(),
+            service: s.clone(),
+            field_name: format!("swap_{}_{}", m, p),
+        })
+        .collect();
+    let pending_swap_count = pending_swap_entries.len();
 
     let ctx = ReconcileCtx {
         name: name.clone(),
@@ -1049,6 +1134,8 @@ pub async fn reconcile_detail(
         preview_module_idx,
         preview_port_name,
         preview_service,
+        pending_swap_entries,
+        pending_swap_count,
         has_port_groups: !port_groups.is_empty(),
         port_groups,
         has_svi_groups: !svi_groups.is_empty(),
@@ -1068,6 +1155,129 @@ pub async fn reconcile_detail(
 }
 
 // ── Handler: POST commit a port service swap ─────────────────────────────────
+
+/// Multi-swap variant: form fields are `swap_<module>_<port>=<service>`
+/// (one per port). All swaps are applied to the device JSON in a single
+/// pass, then the target is recompiled once at the end.
+pub async fn swap_service_multi(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+    let device_name = match resolve_to_device_name(&cfggen_base, &name) {
+        Some(n) => n,
+        None => {
+            return message(
+                &state,
+                "Unknown device",
+                &format!("Could not map '{name}' to a logical device"),
+                Some(("/diff", "Back")),
+            )
+        }
+    };
+
+    let mut swaps: Vec<(usize, String, String)> = Vec::new();
+    for (k, v) in &form {
+        if let Some(rest) = k.strip_prefix("swap_") {
+            if let Some(sep) = rest.find('_') {
+                let (mod_str, port_with_us) = rest.split_at(sep);
+                let port = &port_with_us[1..];
+                if let Ok(mi) = mod_str.parse::<usize>() {
+                    if !v.is_empty() {
+                        swaps.push((mi, port.to_string(), v.clone()));
+                    }
+                }
+            }
+        }
+    }
+    if swaps.is_empty() {
+        return message(
+            &state,
+            "No swaps to commit",
+            "Form contained no swap_<module>_<port>=<service> entries",
+            Some((&format!("/diff/{}/reconcile", name), "Back to reconcile")),
+        );
+    }
+
+    let flat = cfggen_base
+        .join("logical-devices")
+        .join(format!("{}.json", device_name));
+    let dir = cfggen_base
+        .join("logical-devices")
+        .join(&device_name)
+        .join("config.json");
+    let json_path = if flat.exists() { flat } else if dir.exists() { dir } else {
+        return message(
+            &state,
+            "Device not found",
+            &format!("No logical-device JSON for '{device_name}'"),
+            Some(("/diff", "Back")),
+        );
+    };
+    let content = match std::fs::read_to_string(&json_path) {
+        Ok(c) => c,
+        Err(e) => return message(&state, "I/O error", &format!("{e}"), None),
+    };
+    let mut raw_json: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(e) => return message(&state, "JSON parse error", &format!("{e}"), None),
+    };
+
+    let mut applied_count = 0usize;
+    for (mi, pn, svc) in &swaps {
+        if let Some(modules) = raw_json.get_mut("modules").and_then(|v| v.as_array_mut()) {
+            if let Some(module) = modules.get_mut(*mi) {
+                if let Some(ports) = module.get_mut("ports").and_then(|p| p.as_array_mut()) {
+                    for port in ports {
+                        if port.get("name").and_then(|v| v.as_str()) == Some(pn.as_str()) {
+                            if let Some(obj) = port.as_object_mut() {
+                                obj.insert(
+                                    "service".to_string(),
+                                    serde_json::Value::String(svc.clone()),
+                                );
+                                applied_count += 1;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if applied_count == 0 {
+        return message(
+            &state,
+            "Multi-swap failed",
+            "None of the requested swaps matched a port in the JSON",
+            Some((&format!("/diff/{}/reconcile", name), "Back")),
+        );
+    }
+    let new_content = match serde_json::to_string_pretty(&raw_json) {
+        Ok(s) => s,
+        Err(e) => return message(&state, "Serialize error", &format!("{e}"), None),
+    };
+    if let Err(e) = std::fs::write(&json_path, new_content) {
+        warn!(path = %json_path.display(), error = %e, "Failed to write device JSON");
+        return message(&state, "Write failed", &format!("{e}"), None);
+    }
+    info!(
+        device = %device_name,
+        applied = applied_count,
+        requested = swaps.len(),
+        "Multi-swap committed"
+    );
+
+    if let Err(e) =
+        crate::routes::devices::compile_device_config(&device_name, &cfggen_base, &state.config)
+    {
+        warn!(error = %e, "Recompile after multi-swap failed");
+    }
+    Redirect::to(&format!("/diff/{}/reconcile", name)).into_response()
+}
 
 pub async fn swap_service(
     State(state): State<AppState>,
@@ -3013,6 +3223,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/diff/{name}/reconcile", get(reconcile_detail))
         .route("/diff/{name}/reconcile/swap", post(swap_service))
+        .route("/diff/{name}/reconcile/swap-multi", post(swap_service_multi))
         .route("/diff/{name}/reconcile/absorb", post(absorb_drift))
         .route(
             "/diff/{name}/reconcile/fold-prologue",

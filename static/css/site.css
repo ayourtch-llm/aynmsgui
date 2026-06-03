@@ -364,6 +364,21 @@ tr.rec-add    td pre.rec-line { color: #1b5e20; background: #f5fbf5; }
     background: #fff5f5; border-color: #e09090; color: #8a3a3a; font-style: italic;
 }
 
+/* Sticky bar at the top of the reconcile page when NOT in preview mode.
+ * Becomes active once the operator has ticked any per-port checkbox;
+ * one click then opens a multi-port preview URL. */
+.reconcile-multi-bar {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: #f5fbf5;
+    border: 1px solid #b6e0b6;
+    padding: 6px 12px;
+    margin: 8px 0 12px 0;
+    border-radius: 4px;
+}
+.reconcile-multi-bar button { margin-left: 6px; }
+
 /* Banner shown while previewing a service swap. */
 .reconcile-preview-banner {
     background: #fff7e0;

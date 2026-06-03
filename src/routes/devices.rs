@@ -540,9 +540,16 @@ pub fn serial_to_device_names(
         if let Some(modules) = config.get("modules").and_then(|m| m.as_array()) {
             for module in modules {
                 if let Some(serial) = module.get("serial").and_then(|s| s.as_str()) {
-                    map.entry(serial.to_string())
-                        .or_default()
-                        .push(device_name.clone());
+                    // It's common for stack members under one logical device
+                    // to all carry the master's serial (e.g. AD6-X015 has
+                    // both a stub module and a real C9300 module both
+                    // serial=FCW2216G054), which made /diff render
+                    // "AD6-X015, AD6-X015" in the Logical Device column.
+                    // Dedupe so each device appears at most once per serial.
+                    let entry = map.entry(serial.to_string()).or_default();
+                    if !entry.iter().any(|n| n == device_name) {
+                        entry.push(device_name.clone());
+                    }
                 }
             }
         }

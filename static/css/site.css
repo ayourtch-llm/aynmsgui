@@ -329,6 +329,22 @@ details.svi-group > summary {
     font-size: 0.9em;
 }
 
+/* /reconcile/services index: rows for services with at least one
+ * non-null prologue attached anywhere across the fleet — i.e. things the
+ * operator could fold. Tint the row so they pop out of the table when
+ * the fleet has hundreds of services. Win over zebra striping with the
+ * same !important trick the retrieve-stale rows use. */
+tr.has-fold-candidates,
+tr.has-fold-candidates:nth-child(odd),
+tr.has-fold-candidates:nth-child(even) {
+    background-color: #fff7e0 !important;
+}
+tr.has-fold-candidates:hover { background-color: #fff0c0 !important; }
+tr.has-fold-candidates td.prologue-count {
+    color: #b07000;
+    font-weight: 700;
+}
+
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint
  * signals "this is here for context but you can't act on it." Win over

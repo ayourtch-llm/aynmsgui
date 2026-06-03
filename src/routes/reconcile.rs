@@ -1535,6 +1535,9 @@ struct ServiceIndexRow {
     /// True if this service is referenced by at least one port across the
     /// fleet. Services nobody uses are listed at the bottom for awareness.
     in_use: bool,
+    /// True iff `distinct_prologue_count > 0`. Template uses it to tint
+    /// the row so cleanup candidates pop out of the list at a glance.
+    has_fold_candidates: bool,
 }
 
 #[derive(Serialize)]
@@ -1569,11 +1572,19 @@ pub async fn services_index(State(state): State<AppState>) -> Response {
                 port_count,
                 distinct_prologue_count,
                 in_use: device_count > 0,
+                has_fold_candidates: distinct_prologue_count > 0,
             }
         })
         .collect();
-    // In-use first, then alphabetical within each bucket.
-    rows.sort_by(|a, b| b.in_use.cmp(&a.in_use).then_with(|| a.name.cmp(&b.name)));
+    // In-use first; within in-use, fold candidates first (sorted by
+    // candidate count desc, then alphabetically); unused last.
+    rows.sort_by(|a, b| {
+        b.in_use
+            .cmp(&a.in_use)
+            .then_with(|| b.has_fold_candidates.cmp(&a.has_fold_candidates))
+            .then_with(|| b.distinct_prologue_count.cmp(&a.distinct_prologue_count))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     let in_use_count = rows.iter().filter(|r| r.in_use).count();
     let unused_count = rows.len() - in_use_count;
 

@@ -15,11 +15,11 @@
 <thead><tr><th>Service</th><th>Devices</th><th>Ports</th><th>Distinct prologues</th></tr></thead>
 <tbody>
 {{#rows}}
-<tr>
+<tr class="{{#has_fold_candidates}}has-fold-candidates{{/has_fold_candidates}}">
   <td><a href="/reconcile/services/{{name}}">{{name}}</a></td>
   <td>{{device_count}}</td>
   <td>{{port_count}}</td>
-  <td>{{distinct_prologue_count}}</td>
+  <td class="prologue-count">{{distinct_prologue_count}}</td>
 </tr>
 {{/rows}}
 </tbody>

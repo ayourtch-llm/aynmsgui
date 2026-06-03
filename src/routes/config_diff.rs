@@ -479,6 +479,78 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/diff", get(diff_overview))
         .route("/diff/{name}", get(diff_detail))
+        .route("/diff/{name}/recompile", axum::routing::post(recompile_one))
+        .route("/diff/recompile-all", axum::routing::post(recompile_all))
+}
+
+// ── Recompile actions ────────────────────────────────────────────────────────
+
+/// POST /diff/{name}/recompile — re-runs compile_device_config for the
+/// device backing the .cfg whose serial is `name`, refreshing the target
+/// config so the page reflects current cfggen state. Redirects back to
+/// the diff overview.
+pub async fn recompile_one(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(cfggen_base) = state.config.cfggen_base_dir.as_ref().filter(|p| p.exists()) else {
+        return axum::response::Redirect::to("/diff").into_response();
+    };
+    let device_name = serial_to_logical_name(cfggen_base, &name).unwrap_or(name.clone());
+    if let Err(e) = crate::routes::devices::compile_device_config(
+        &device_name,
+        cfggen_base,
+        &state.config,
+    ) {
+        warn!(device = %device_name, error = %e, "Recompile failed");
+    }
+    axum::response::Redirect::to("/diff").into_response()
+}
+
+/// POST /diff/recompile-all — recompiles every logical-device target
+/// config. Useful after a structural cfggen change.
+pub async fn recompile_all(State(state): State<AppState>) -> Response {
+    let Some(cfggen_base) = state.config.cfggen_base_dir.as_ref().filter(|p| p.exists()) else {
+        return axum::response::Redirect::to("/diff").into_response();
+    };
+    let logical_dir = cfggen_base.join("logical-devices");
+    if let Ok(entries) = std::fs::read_dir(&logical_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = if path.is_dir() {
+                if !path.join("config.json").exists() {
+                    continue;
+                }
+                path.file_name().and_then(|s| s.to_str()).map(|s| s.to_string())
+            } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())
+            } else {
+                None
+            };
+            if let Some(name) = name {
+                if let Err(e) = crate::routes::devices::compile_device_config(
+                    &name,
+                    cfggen_base,
+                    &state.config,
+                ) {
+                    warn!(device = %name, error = %e, "Recompile failed");
+                }
+            }
+        }
+    }
+    axum::response::Redirect::to("/diff").into_response()
+}
+
+fn serial_to_logical_name(cfggen_base: &std::path::Path, raw: &str) -> Option<String> {
+    let logical_dir = cfggen_base.join("logical-devices");
+    if logical_dir.join(format!("{}.json", raw)).exists()
+        || logical_dir.join(raw).join("config.json").exists()
+    {
+        return Some(raw.to_string());
+    }
+    let configs = load_all_device_configs(cfggen_base);
+    let map = serial_to_device_names(&configs);
+    map.get(raw).and_then(|n| n.first().cloned())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

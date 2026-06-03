@@ -1,6 +1,11 @@
 <h1 class="list-page-heading">Config Diff Overview</h1>
 <p style="margin: 0 0 8px 0;">
   <a href="/reconcile/services">Service prologue reconciliation →</a>
+  &nbsp;·&nbsp;
+  <form method="POST" action="/diff/recompile-all" style="display:inline;"
+        onsubmit="return confirm('Recompile every logical-device target config? Local only — does not touch live devices.');">
+    <button type="submit">Recompile all targets</button>
+  </form>
 </p>
 {{> quicksearch}}
 <div class="table-scroll">
@@ -27,6 +32,9 @@
     <form method="POST" action="/retrieve" style="display:inline; margin-left:8px;">
       <input type="hidden" name="select_{{name}}" value="on">
       <button type="submit"{{#retrieve_disabled}} title="{{retrieve_reason}}" disabled{{/retrieve_disabled}}>Retrieve</button>
+    </form>
+    <form method="POST" action="/diff/{{name}}/recompile" style="display:inline; margin-left:4px;">
+      <button type="submit" title="Re-run compile_device_config for this device, refreshing its target .cfg from current cfggen state">Recompile</button>
     </form>
   </td>
 </tr>

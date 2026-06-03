@@ -63,6 +63,32 @@ enum Cmd {
     ReconcileGroups {
         device: String,
     },
+    /// Recompile one device's target config (writes
+    /// `target-configs/<serial>.cfg`). Use after editing cfggen sources
+    /// (services, templates, hardware templates) so the /diff page
+    /// reflects the new compile output without touching the web UI.
+    Recompile {
+        /// Logical-device name (e.g. AD6-X001).
+        device: String,
+        /// Override the target-configs output dir. Defaults to
+        /// `data/target-configs`.
+        #[arg(long, default_value = "data/target-configs", env = "AYNMSGUI_TARGET_CONFIGS_PATH")]
+        target_configs: PathBuf,
+        /// Override the preview output dir. Defaults to
+        /// `data/target-configs-preview`.
+        #[arg(long, default_value = "data/target-configs-preview", env = "AYNMSGUI_TARGET_CONFIGS_PREVIEW_PATH")]
+        target_configs_preview: PathBuf,
+    },
+    /// Recompile every logical device under
+    /// `<cfggen-base>/logical-devices/`. Useful after a structural cfggen
+    /// change (e.g. new `!` separator emission) so every target config
+    /// gets refreshed in one go.
+    RecompileAll {
+        #[arg(long, default_value = "data/target-configs", env = "AYNMSGUI_TARGET_CONFIGS_PATH")]
+        target_configs: PathBuf,
+        #[arg(long, default_value = "data/target-configs-preview", env = "AYNMSGUI_TARGET_CONFIGS_PREVIEW_PATH")]
+        target_configs_preview: PathBuf,
+    },
 }
 
 pub fn run(argv: Vec<String>) {
@@ -84,6 +110,15 @@ pub fn run(argv: Vec<String>) {
     match &args.cmd {
         Cmd::Reconcile { device } => cmd_reconcile(&args, device),
         Cmd::ReconcileGroups { device } => cmd_reconcile_groups(&args, device),
+        Cmd::Recompile {
+            device,
+            target_configs,
+            target_configs_preview,
+        } => cmd_recompile(&args, device, target_configs, target_configs_preview),
+        Cmd::RecompileAll {
+            target_configs,
+            target_configs_preview,
+        } => cmd_recompile_all(&args, target_configs, target_configs_preview),
     }
 }
 
@@ -172,6 +207,137 @@ fn cmd_reconcile(args: &CliArgs, raw: &str) {
     println!("# Delta tree walk, sections indent the lines that belong to them.");
     let mut ctx: Vec<String> = Vec::new();
     walk(&diff.actions, &mut ctx, &by_text, &provs);
+}
+
+fn cmd_recompile(
+    args: &CliArgs,
+    device_name: &str,
+    target_dir: &std::path::Path,
+    preview_dir: &std::path::Path,
+) {
+    match recompile_one(&args.cfggen_base, device_name, target_dir, preview_dir) {
+        Ok(path) => println!("OK  {device_name} → {}", path.display()),
+        Err(e) => {
+            eprintln!("ERR {device_name}: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_recompile_all(
+    args: &CliArgs,
+    target_dir: &std::path::Path,
+    preview_dir: &std::path::Path,
+) {
+    let logical_dir = args.cfggen_base.join("logical-devices");
+    let entries = match std::fs::read_dir(&logical_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", logical_dir.display());
+            std::process::exit(1);
+        }
+    };
+    let mut devices: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.join("config.json").exists() {
+                if let Some(n) = path.file_name().and_then(|s| s.to_str()) {
+                    devices.push(n.to_string());
+                }
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Some(n) = path.file_stem().and_then(|s| s.to_str()) {
+                devices.push(n.to_string());
+            }
+        }
+    }
+    devices.sort();
+    let mut ok = 0usize;
+    let mut err = 0usize;
+    for name in &devices {
+        match recompile_one(&args.cfggen_base, name, target_dir, preview_dir) {
+            Ok(path) => {
+                println!("OK  {name} → {}", path.display());
+                ok += 1;
+            }
+            Err(e) => {
+                eprintln!("ERR {name}: {e}");
+                err += 1;
+            }
+        }
+    }
+    println!("\n{ok} ok, {err} failed (out of {})", devices.len());
+    if err > 0 {
+        std::process::exit(1);
+    }
+}
+
+/// Recompile a single device's target config, writing to both the
+/// preview dir (keyed by device name) and the target_configs dir
+/// (keyed by the first module's serial). Returns the target_configs
+/// path written, or an error if anything went wrong.
+fn recompile_one(
+    cfggen_base: &std::path::Path,
+    device_name: &str,
+    target_dir: &std::path::Path,
+    preview_dir: &std::path::Path,
+) -> anyhow::Result<std::path::PathBuf> {
+    use aycfggen::compile::compile_device;
+    let device_source = FsLogicalDeviceSource::new(cfggen_base.join("logical-devices"));
+    let hw_source = FsHardwareTemplateSource::new(cfggen_base.join("hardware-templates"));
+    let service_source = FsServiceSource::new(cfggen_base.join("services"));
+    let template_source = FsConfigTemplateSource::new(cfggen_base.join("config-templates"));
+    let element_source = FsConfigElementSource::new(cfggen_base.join("config-elements"));
+    let image_source = FsSoftwareImageSource::new(cfggen_base.join("software-images"));
+    let compiled = compile_device(
+        device_name,
+        &device_source,
+        &hw_source,
+        &service_source,
+        &template_source,
+        &element_source,
+        &image_source,
+    )?;
+
+    std::fs::create_dir_all(preview_dir)?;
+    let preview_path = preview_dir.join(format!("{}.cfg", device_name));
+    std::fs::write(&preview_path, &compiled)?;
+
+    // Pull the first module's serial out of the JSON so we can write
+    // the same content to target_configs/<serial>.cfg — that's the
+    // file the /diff page reads.
+    let logical_dir = cfggen_base.join("logical-devices");
+    let flat = logical_dir.join(format!("{}.json", device_name));
+    let dir = logical_dir.join(device_name).join("config.json");
+    let json_path = if flat.exists() { flat } else { dir };
+    let serial: Option<String> = std::fs::read_to_string(&json_path)
+        .ok()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+        .and_then(|v| {
+            v.get("modules")
+                .and_then(|m| m.as_array())
+                .and_then(|arr| {
+                    arr.iter().find_map(|m| {
+                        m.get("serial")
+                            .and_then(|s| s.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                    })
+                })
+        });
+
+    let target_path = match serial {
+        Some(s) => {
+            std::fs::create_dir_all(target_dir)?;
+            let p = target_dir.join(format!("{}.cfg", s));
+            std::fs::write(&p, &compiled)?;
+            p
+        }
+        None => preview_path.clone(),
+    };
+
+    Ok(target_path)
 }
 
 fn cmd_reconcile_groups(args: &CliArgs, raw: &str) {

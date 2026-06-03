@@ -294,6 +294,7 @@ details.port-group, details.svi-group {
     background: #ffffff;
 }
 details.port-group.previewing { border-color: #1a5276; background: #f0f5ff; }
+details.port-group.template-port { border-left: 4px solid #b07000; }
 details.port-group > summary,
 details.svi-group > summary {
     cursor: pointer;

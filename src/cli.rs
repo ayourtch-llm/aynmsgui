@@ -425,46 +425,33 @@ fn tally_one(
     provs: &[LineProv],
     tally: &mut HashMap<&'static str, usize>,
 ) {
-    let key = text.trim();
-    let Some(indices) = by_text.get(key) else {
-        *tally.entry("unresolved").or_insert(0) += 1;
-        return;
-    };
+    let _ = text;
+    let _ = by_text;
+    // Route by interface kind — same logic as the reconcile route. Each
+    // delta line lives under exactly one interface header (or none); we
+    // look up that header's source in the provenance map to decide which
+    // bucket the line lands in.
     let iface_ctx = ctx
         .iter()
         .rev()
         .find(|s| s.starts_with("interface "))
         .cloned();
-    let mut chosen: Option<usize> = None;
-    for &i in indices {
-        if let Some(ref ic) = iface_ctx {
-            if line_is_in_interface_block(provs, i, ic) {
-                chosen = Some(i);
-                break;
-            }
-        }
-    }
-    if chosen.is_none() && indices.len() == 1 {
-        chosen = Some(indices[0]);
-    }
-    let Some(idx) = chosen else {
-        *tally.entry("ambiguous").or_insert(0) += 1;
+    let Some(iface) = iface_ctx else {
+        *tally.entry("other (no iface ctx)").or_insert(0) += 1;
         return;
     };
-    let bucket = match &provs[idx].source {
-        ProvSource::PortService { .. }
-        | ProvSource::PortInterfaceHeader { .. }
-        | ProvSource::PortPrologue { .. }
-        | ProvSource::PortEpilogue { .. } => "port (service-driven)",
-        ProvSource::SviService { .. } => "svi (service-driven)",
-        ProvSource::Template { .. } | ProvSource::TemplateVarExpanded { .. } => {
-            "template (other)"
+    // Walk the provenance list once per call — cheap; this is a debug tool.
+    let header_src = provs
+        .iter()
+        .find(|p| p.text.trim() == iface)
+        .map(|p| &p.source);
+    let bucket = match header_src {
+        Some(ProvSource::PortInterfaceHeader { .. }) => "port (json-driven)",
+        Some(ProvSource::Template { .. } | ProvSource::TemplateVarExpanded { .. }) => {
+            "port (template-baked)"
         }
-        ProvSource::ConfigElement { .. } | ProvSource::ConfigElementMarker { .. } => {
-            "config-element (other)"
-        }
-        ProvSource::Structural { .. } => "structural (other)",
-        ProvSource::Unknown { .. } => "unknown",
+        Some(ProvSource::SviService { .. }) => "svi",
+        Some(_) | None => "other (unrecognised iface)",
     };
     *tally.entry(bucket).or_insert(0) += 1;
 }

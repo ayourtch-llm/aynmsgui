@@ -180,6 +180,20 @@ struct PortGroupCtx {
     service_options: Vec<ServiceOptionCtx>,
     lines: Vec<ReconcileLineCtx>,
     line_count: usize,
+    /// True for interfaces emitted by the per-port service pipeline
+    /// (i.e. present in the device JSON). Drives whether the service
+    /// swap / suggestion / fold UI is shown.
+    is_json_port: bool,
+    /// True for interfaces that come from the .conf template verbatim,
+    /// i.e. not referenced from the device JSON's port assignments.
+    /// These still get grouped per-interface so the delta lines under
+    /// each show up in one place — but the actions are different
+    /// (link to edit the template line directly, no service dropdown).
+    is_template_port: bool,
+    /// Populated when is_template_port — the source location of the
+    /// `interface ...` header inside the .conf template.
+    template_path: String,
+    template_line: usize,
     /// Set when the page was rendered with this port's service overridden
     /// (?try_* params). The template uses it to render a "Commit swap"
     /// form pointing at /swap.
@@ -596,24 +610,31 @@ pub async fn reconcile_detail(
         }
     }
 
-    // Group by attribution.
-    let mut port_groups_map: HashMap<(usize, String), PortGroupCtx> = HashMap::new();
+    // Group by attribution. Port groups are keyed by the *interface
+    // text* (e.g. "interface TwoGigabitEthernet1/0/12") so we put both
+    // JSON-driven and template-baked interfaces in the same per-port
+    // bucket — instead of routing template-baked ports to a generic
+    // "other" pile, which was the misattribution the operator was
+    // seeing on /diff/.../reconcile.
+    let mut port_groups_map: HashMap<String, PortGroupCtx> = HashMap::new();
     let mut svi_groups_map: HashMap<String, SviGroupCtx> = HashMap::new();
     let mut drift_lines: Vec<DriftLineCtx> = Vec::new();
     let mut other_lines: Vec<ReconcileLineCtx> = Vec::new();
 
-    // For drift inference: map iface text ("interface Gi1/0/12") →
-    // (module_idx, port_name, service). Built from target_provs by finding
-    // PortInterfaceHeader entries.
+    // Classify every `interface X` line in the target by what kind of
+    // source emitted it. The iface_ctx the diff walker hands us is
+    // matched against this map to pick a group.
+    let iface_kinds = build_iface_kind_map(&target_provs);
+
+    // Drift inference: map iface text → (module_idx, port_name, service)
+    // for JSON-managed ports only — template-baked ports have no service
+    // for the absorb-action to target.
     let mut iface_to_port: HashMap<String, (usize, String, String)> = HashMap::new();
-    for prov in &target_provs {
-        if let ProvSource::PortInterfaceHeader {
-            module_idx,
-            port_name,
-            derived_interface,
-        } = &prov.source
+    for (iface_text, kind) in &iface_kinds {
+        if let IfaceKind::JsonPort {
+            module_idx, port_name, ..
+        } = kind
         {
-            let iface_text = format!("interface {}", derived_interface);
             let svc = real_config
                 .modules
                 .get(*module_idx)
@@ -621,21 +642,16 @@ pub async fn reconcile_detail(
                 .and_then(|m| m.ports.iter().find(|p| &p.name == port_name))
                 .map(|p| p.service.clone())
                 .unwrap_or_default();
-            iface_to_port.insert(iface_text, (*module_idx, port_name.clone(), svc));
+            iface_to_port.insert(
+                iface_text.clone(),
+                (*module_idx, port_name.clone(), svc),
+            );
         }
     }
 
-    for (line_ctx, chosen_idx, iface_ctx) in walked {
-        // Drift lines first. line_ctx.text is the literal device-side
-        // command (already extracted by walk_remove_node from the
-        // ConfigTree's Remove(node) → leaf.text), so no string trickery
-        // here — the bare command IS what the device has.
+    for (line_ctx, _chosen_idx, iface_ctx) in walked {
         if line_ctx.direction == "remove" {
             let bare_cmd = line_ctx.text.trim().to_string();
-            // Synthesize the form aycicdiff would emit in the textual
-            // delta, for the secondary column. Goes through the rules so
-            // override-registry negations (e.g. "shutdown" → "no shutdown")
-            // are accurate.
             let negation_emitted =
                 aycicdiff::serialize::negation::negate_command_with_rules(&bare_cmd, &rules);
             let (module_idx, port_name, current_service) = iface_to_port
@@ -655,31 +671,19 @@ pub async fn reconcile_detail(
             continue;
         }
 
-        // Now route resolved adds into per-port or per-SVI groups.
-        if let Some(idx) = chosen_idx {
-            match &target_provs[idx].source {
-                ProvSource::PortService {
-                    module_idx,
-                    port_name,
-                    ..
-                }
-                | ProvSource::PortInterfaceHeader {
-                    module_idx,
-                    port_name,
-                    ..
-                }
-                | ProvSource::PortPrologue {
-                    module_idx,
-                    port_name,
-                    ..
-                }
-                | ProvSource::PortEpilogue {
-                    module_idx,
-                    port_name,
-                    ..
-                } => {
-                    let key = (*module_idx, port_name.clone());
-                    let group = port_groups_map.entry(key.clone()).or_insert_with(|| {
+        // Route adds by the *interface* that owns them (from iface_ctx),
+        // not by the line's own provenance. This puts per-port changes
+        // under their interface regardless of whether the interface
+        // comes from the device JSON or the .conf template.
+        match iface_kinds.get(&iface_ctx) {
+            Some(IfaceKind::JsonPort {
+                module_idx,
+                port_name,
+                derived_interface,
+            }) => {
+                let group = port_groups_map
+                    .entry(iface_ctx.clone())
+                    .or_insert_with(|| {
                         let port_assign = real_config
                             .modules
                             .get(*module_idx)
@@ -693,24 +697,9 @@ pub async fn reconcile_detail(
                             .filter(|s| !s.is_empty())
                             .unwrap_or_default();
                         let has_prologue = !prologue_text.is_empty();
-                        let derived_interface = target_provs
-                            .iter()
-                            .find_map(|prov| match &prov.source {
-                                ProvSource::PortInterfaceHeader {
-                                    module_idx: m,
-                                    port_name: pn,
-                                    derived_interface,
-                                } if *m == key.0 && pn == &key.1 => Some(derived_interface.clone()),
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| "?".to_string());
                         let is_previewing = is_preview
                             && preview_module_idx == *module_idx
                             && preview_port_name == *port_name;
-                        // During preview, the dropdown should reflect the
-                        // service the operator just picked — not the saved
-                        // value, which still lives in the header
-                        // ("current service: <saved>") and in the banner.
                         let selected_service = if is_previewing {
                             preview_service.clone()
                         } else {
@@ -726,46 +715,71 @@ pub async fn reconcile_detail(
                         PortGroupCtx {
                             module_idx: *module_idx,
                             port_name: port_name.clone(),
-                            derived_interface,
+                            derived_interface: derived_interface.clone(),
                             current_service,
                             service_options,
                             lines: Vec::new(),
                             line_count: 0,
+                            is_json_port: true,
+                            is_template_port: false,
+                            template_path: String::new(),
+                            template_line: 0,
                             is_previewing,
                             previewing_service: if is_previewing {
                                 preview_service.clone()
                             } else {
                                 String::new()
                             },
-                            // Populated after grouping completes (we need
-                            // the parsed current-config bodies for that).
                             suggested_service: String::new(),
                             has_suggestion: false,
                             has_prologue,
                             prologue_text,
                         }
                     });
-                    group.lines.push(line_ctx);
-                    continue;
-                }
-                ProvSource::SviService { service, .. } => {
-                    let group = svi_groups_map
-                        .entry(service.clone())
-                        .or_insert_with(|| SviGroupCtx {
-                            service: service.clone(),
-                            lines: Vec::new(),
-                            line_count: 0,
-                        });
-                    group.lines.push(line_ctx);
-                    continue;
-                }
-                _ => {
-                    other_lines.push(line_ctx);
-                    continue;
-                }
+                group.lines.push(line_ctx);
+            }
+            Some(IfaceKind::TemplatePort {
+                template_path,
+                template_line,
+                derived_interface,
+            }) => {
+                let group = port_groups_map
+                    .entry(iface_ctx.clone())
+                    .or_insert_with(|| PortGroupCtx {
+                        module_idx: 0,
+                        port_name: String::new(),
+                        derived_interface: derived_interface.clone(),
+                        current_service: String::new(),
+                        service_options: Vec::new(),
+                        lines: Vec::new(),
+                        line_count: 0,
+                        is_json_port: false,
+                        is_template_port: true,
+                        template_path: template_path.clone(),
+                        template_line: *template_line,
+                        is_previewing: false,
+                        previewing_service: String::new(),
+                        suggested_service: String::new(),
+                        has_suggestion: false,
+                        has_prologue: false,
+                        prologue_text: String::new(),
+                    });
+                group.lines.push(line_ctx);
+            }
+            Some(IfaceKind::Svi { service }) => {
+                let group = svi_groups_map
+                    .entry(service.clone())
+                    .or_insert_with(|| SviGroupCtx {
+                        service: service.clone(),
+                        lines: Vec::new(),
+                        line_count: 0,
+                    });
+                group.lines.push(line_ctx);
+            }
+            None => {
+                other_lines.push(line_ctx);
             }
         }
-        other_lines.push(line_ctx);
     }
 
     // Pre-load every service's port-config.txt once. Used both for the
@@ -784,25 +798,36 @@ pub async fn reconcile_detail(
         .into_values()
         .map(|mut g| {
             g.line_count = g.lines.len();
-            let iface_text = format!("interface {}", g.derived_interface);
-            if let Some(body) = current_port_bodies.get(&iface_text) {
-                if let Some(matched) =
-                    aycfggen::port_decomposition::match_port_body_to_existing_service(
-                        body,
-                        &services_map,
-                    )
-                {
-                    g.has_suggestion = matched != g.current_service && !matched.is_empty();
-                    g.suggested_service = matched;
+            // Import-matcher suggestion only makes sense for JSON-driven
+            // ports — template-baked interfaces don't have a port.service
+            // field to swap.
+            if g.is_json_port {
+                let iface_text = format!("interface {}", g.derived_interface);
+                if let Some(body) = current_port_bodies.get(&iface_text) {
+                    if let Some(matched) =
+                        aycfggen::port_decomposition::match_port_body_to_existing_service(
+                            body,
+                            &services_map,
+                        )
+                    {
+                        g.has_suggestion =
+                            matched != g.current_service && !matched.is_empty();
+                        g.suggested_service = matched;
+                    }
                 }
             }
             g
         })
         .collect();
+    // JSON ports first (within them: module, then port-name natural), then
+    // template-baked interfaces (alphabetized by interface name). Keeps
+    // the actionable groups near the top.
     port_groups.sort_by(|a, b| {
-        a.module_idx
-            .cmp(&b.module_idx)
-            .then_with(|| crate::routes::reconcile::natural_compare_port(&a.port_name, &b.port_name))
+        b.is_json_port
+            .cmp(&a.is_json_port)
+            .then_with(|| a.module_idx.cmp(&b.module_idx))
+            .then_with(|| natural_compare_port(&a.port_name, &b.port_name))
+            .then_with(|| natural_compare_port(&a.derived_interface, &b.derived_interface))
     });
 
     let mut svi_groups: Vec<SviGroupCtx> = svi_groups_map
@@ -1177,6 +1202,70 @@ pub async fn fold_prologue_execute(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// One iface header in the target gets classified into one of these
+/// kinds, which then drives where its associated delta lines land in
+/// the reconcile page's grouping.
+enum IfaceKind {
+    /// The interface comes from a port assignment in the device JSON
+    /// (PortInterfaceHeader provenance). Service-swap UI is shown.
+    JsonPort {
+        module_idx: usize,
+        port_name: String,
+        derived_interface: String,
+    },
+    /// The interface block is baked into the .conf template — no JSON
+    /// port assignment maps to it. Service-swap doesn't apply; the
+    /// reconcile page shows the template source location instead.
+    TemplatePort {
+        template_path: String,
+        template_line: usize,
+        derived_interface: String,
+    },
+    /// SVI interface emitted from a service's svi-config.txt.
+    Svi { service: String },
+}
+
+fn build_iface_kind_map(provs: &[LineProv]) -> HashMap<String, IfaceKind> {
+    let mut out = HashMap::new();
+    for prov in provs {
+        let text = prov.text.trim();
+        if !text.starts_with("interface ") {
+            continue;
+        }
+        let derived = text
+            .strip_prefix("interface ")
+            .unwrap_or(text)
+            .trim()
+            .to_string();
+        let kind = match &prov.source {
+            ProvSource::PortInterfaceHeader {
+                module_idx,
+                port_name,
+                derived_interface,
+            } => IfaceKind::JsonPort {
+                module_idx: *module_idx,
+                port_name: port_name.clone(),
+                derived_interface: derived_interface.clone(),
+            },
+            ProvSource::Template { path, line }
+            | ProvSource::TemplateVarExpanded { path, line } => IfaceKind::TemplatePort {
+                template_path: path.clone(),
+                template_line: *line,
+                derived_interface: derived,
+            },
+            ProvSource::SviService { service, .. } => IfaceKind::Svi {
+                service: service.clone(),
+            },
+            // Skip unknown sources — those lines fall through to other_lines.
+            _ => continue,
+        };
+        // First-occurrence wins (same iface text shouldn't appear twice
+        // anyway, but be conservative on duplicates).
+        out.entry(text.to_string()).or_insert(kind);
+    }
+    out
+}
 
 /// Walk every device JSON under `logical-devices/` and return the list of
 /// (device_name, port_names) where any port's (service, prologue) pair

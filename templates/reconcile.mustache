@@ -40,16 +40,23 @@
   service in place. Nothing is written to disk until you click <em>Commit swap</em>.
 </p>
 {{#port_groups}}
-<details class="port-group{{#is_previewing}} previewing{{/is_previewing}}" open>
+<details class="port-group{{#is_previewing}} previewing{{/is_previewing}}{{#is_template_port}} template-port{{/is_template_port}}" open>
   <summary>
     <strong>{{derived_interface}}</strong>
-    &nbsp;·&nbsp; <code>{{port_name}}</code>
-    &nbsp;·&nbsp; current service: <code>{{current_service}}</code>
+    {{#is_json_port}}
+      &nbsp;·&nbsp; <code>{{port_name}}</code>
+      &nbsp;·&nbsp; current service: <code>{{current_service}}</code>
+    {{/is_json_port}}
+    {{#is_template_port}}
+      &nbsp;·&nbsp; <span style="color:#b07000; font-weight:600;">template-baked</span>
+      &nbsp;·&nbsp; <code>{{template_path}}:{{template_line}}</code>
+    {{/is_template_port}}
     &nbsp;·&nbsp; {{line_count}} delta line(s)
     {{#is_previewing}}
     &nbsp;·&nbsp; <span style="color:#1a5276; font-weight:600;">previewing → {{previewing_service}}</span>
     {{/is_previewing}}
   </summary>
+  {{#is_json_port}}
   <form method="GET" action="/diff/{{name}}/reconcile" class="port-group-form">
     <input type="hidden" name="try_module" value="{{module_idx}}">
     <input type="hidden" name="try_port" value="{{port_name}}">
@@ -83,6 +90,16 @@
     </span>
   </form>
   {{/has_prologue}}
+  {{/is_json_port}}
+  {{#is_template_port}}
+  <p style="color:#666; font-size:0.9em; margin: 4px 0 8px 0;">
+    This interface block is baked into the device template at
+    <code>{{template_path}}:{{template_line}}</code> — there's no port assignment
+    in the device JSON for it. To change these lines either edit the template
+    directly, or promote this interface to a managed port by adding it under
+    <code>modules[].ports[]</code>.
+  </p>
+  {{/is_template_port}}
   <table class="reconcile-table">
     <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
     <tbody>

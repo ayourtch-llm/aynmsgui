@@ -2109,6 +2109,74 @@ fn normalize_service_loose(content: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Both files a service carries. SVI-only services have an empty `port`;
+/// access-VLAN services typically have an `svi` too (used when the
+/// service is listed in `svi_services` for a device).
+#[derive(Clone, Default)]
+struct ServiceFiles {
+    port: String,
+    svi: String,
+}
+
+fn load_service_files(
+    cfggen_base: &std::path::Path,
+    service_names: &[String],
+) -> std::collections::HashMap<String, ServiceFiles> {
+    let services_dir = cfggen_base.join("services");
+    let mut out = std::collections::HashMap::new();
+    for name in service_names {
+        let dir = services_dir.join(name);
+        let port = std::fs::read_to_string(dir.join("port-config.txt")).unwrap_or_default();
+        let svi = std::fs::read_to_string(dir.join("svi-config.txt")).unwrap_or_default();
+        out.insert(name.clone(), ServiceFiles { port, svi });
+    }
+    out
+}
+
+/// Strict match key spanning both files. The `\u{1}` separator keeps
+/// port and svi contents from accidentally aliasing through whitespace
+/// (e.g. one ends with `\n`, the other starts with content).
+fn normalize_files_strict(files: &ServiceFiles) -> String {
+    format!(
+        "PORT\u{1}{}\u{1}SVI\u{1}{}",
+        normalize_service_strict(&files.port),
+        normalize_service_strict(&files.svi)
+    )
+}
+
+fn normalize_files_loose(files: &ServiceFiles) -> String {
+    format!(
+        "PORT\u{1}{}\u{1}SVI\u{1}{}",
+        normalize_service_loose(&files.port),
+        normalize_service_loose(&files.svi)
+    )
+}
+
+/// True when both files are empty (or whitespace-only) — placeholder
+/// service that shouldn't be lumped with others just because their
+/// normalization keys collide.
+fn service_files_empty(files: &ServiceFiles) -> bool {
+    normalize_service_strict(&files.port).trim().is_empty()
+        && normalize_service_strict(&files.svi).trim().is_empty()
+}
+
+/// Pretty-print both files for the canonical preview block. Empty files
+/// get a `(empty)` placeholder so the operator knows the SVI side is
+/// also being merged-as-empty.
+fn render_files_preview(files: &ServiceFiles) -> String {
+    let port = if files.port.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        files.port.trim_end().to_string()
+    };
+    let svi = if files.svi.trim().is_empty() {
+        "(empty)".to_string()
+    } else {
+        files.svi.trim_end().to_string()
+    };
+    format!("──── port-config.txt ────\n{port}\n\n──── svi-config.txt ────\n{svi}\n")
+}
+
 /// Extract just the description lines for diffing.
 fn description_lines(content: &str) -> Vec<String> {
     content
@@ -2171,36 +2239,29 @@ struct DedupIndexCtx {
 
 fn find_duplicate_groups(cfggen_base: &std::path::Path) -> (Vec<DedupGroup>, Vec<DedupGroup>) {
     let services = load_available_services(cfggen_base);
-    let services_map = load_service_port_configs(cfggen_base, &services);
+    // Both port-config.txt AND svi-config.txt feed the match key — two
+    // services with identical port bodies but different SVI bodies (very
+    // common for `access-vlanN` services that ride alongside an SVI
+    // service per chassis) are NOT duplicates.
+    let files_map = load_service_files(cfggen_base, &services);
     let usage = collect_service_usage(cfggen_base);
     let usage_by: std::collections::HashMap<String, &ServiceUsageRaw> =
         usage.iter().map(|u| (u.name.clone(), u)).collect();
 
-    // Group by strict normalization (identical) and by loose normalization
-    // (identical-besides-description).
     let mut strict_buckets: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut loose_buckets: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
 
     for name in &services {
-        let content = services_map.get(name).cloned().unwrap_or_default();
-        let strict_key = normalize_service_strict(&content);
-        // Services with no real body (missing / empty / whitespace-only
-        // port-config.txt) are usually placeholders — don't suggest
-        // merging them just because they all normalize to "". Same for
-        // their loose key. If the strict key is empty, skip both.
-        if strict_key.trim().is_empty() {
+        let files = files_map.get(name).cloned().unwrap_or_default();
+        // Skip true placeholders (both files empty / whitespace-only) so
+        // we don't surface "merge every stub together" suggestions.
+        if service_files_empty(&files) {
             continue;
         }
-        let loose_key = normalize_service_loose(&content);
-        if loose_key.trim().is_empty() {
-            // Service has *only* description lines (no body) — also not a
-            // useful merge candidate. Strict bucket still gets it in case
-            // two such stubs are truly byte-equal, but skip loose.
-            strict_buckets.entry(strict_key).or_default().push(name.clone());
-            continue;
-        }
+        let strict_key = normalize_files_strict(&files);
+        let loose_key = normalize_files_loose(&files);
         strict_buckets.entry(strict_key).or_default().push(name.clone());
         loose_buckets.entry(loose_key).or_default().push(name.clone());
     }
@@ -2215,8 +2276,8 @@ fn find_duplicate_groups(cfggen_base: &std::path::Path) -> (Vec<DedupGroup>, Vec
             pb.cmp(&pa).then_with(|| a.cmp(b))
         });
         let canonical = sorted_members[0].clone();
-        let canonical_content = services_map.get(&canonical).cloned().unwrap_or_default();
-        let canonical_preview = canonical_content.clone();
+        let canonical_files = files_map.get(&canonical).cloned().unwrap_or_default();
+        let canonical_preview = render_files_preview(&canonical_files);
 
         let member_views: Vec<DedupMember> = sorted_members
             .iter()
@@ -2224,8 +2285,12 @@ fn find_duplicate_groups(cfggen_base: &std::path::Path) -> (Vec<DedupGroup>, Vec
                 let u = usage_by.get(m);
                 let device_count = u.map(|u| u.devices.len()).unwrap_or(0);
                 let port_count = u.map(|u| u.port_count).unwrap_or(0);
-                let content = services_map.get(m).cloned().unwrap_or_default();
-                let descs = description_lines(&content);
+                let f = files_map.get(m).cloned().unwrap_or_default();
+                // Pull descriptions from BOTH files — they live in either
+                // depending on whether the service describes a port block
+                // or an SVI.
+                let mut descs = description_lines(&f.port);
+                descs.extend(description_lines(&f.svi));
                 let has_descriptions = !descs.is_empty();
                 DedupMember {
                     name: m.clone(),
@@ -2394,29 +2459,34 @@ pub async fn dedup_merge_preview(
     }
 
     let available = load_available_services(&cfggen_base);
-    let services_map = load_service_port_configs(&cfggen_base, &available);
-    let canonical_preview = services_map.get(&q.canonical).cloned().unwrap_or_default();
-    if canonical_preview.is_empty() {
+    let files_map = load_service_files(&cfggen_base, &available);
+    let canonical_files = files_map.get(&q.canonical).cloned().unwrap_or_default();
+    if service_files_empty(&canonical_files) {
         return message(
             &state,
             "Unknown canonical",
-            &format!("Service '{}' has no port-config.txt", q.canonical),
+            &format!(
+                "Service '{}' has no port-config.txt or svi-config.txt content",
+                q.canonical
+            ),
             Some(("/reconcile/dedup", "Back")),
         );
     }
+    let canonical_preview = render_files_preview(&canonical_files);
 
     let usage = collect_service_usage(&cfggen_base);
     let usage_by: std::collections::HashMap<String, &ServiceUsageRaw> =
         usage.iter().map(|u| (u.name.clone(), u)).collect();
 
-    // Are these strict-identical or just description-only?
-    let canon_loose = normalize_service_loose(&canonical_preview);
-    let canon_strict = normalize_service_strict(&canonical_preview);
+    // Are these strict-identical or just description-only? Both files
+    // factor into the comparison.
+    let canon_strict_key = normalize_files_strict(&canonical_files);
+    let canon_loose_key = normalize_files_loose(&canonical_files);
     let mut description_only = false;
     for n in &merge_names {
-        let content = services_map.get(n).cloned().unwrap_or_default();
-        if normalize_service_strict(&content) != canon_strict
-            && normalize_service_loose(&content) == canon_loose
+        let f = files_map.get(n).cloned().unwrap_or_default();
+        if normalize_files_strict(&f) != canon_strict_key
+            && normalize_files_loose(&f) == canon_loose_key
         {
             description_only = true;
         }
@@ -2426,8 +2496,9 @@ pub async fn dedup_merge_preview(
         .chain(merge_names.iter().cloned())
         .map(|n| {
             let u = usage_by.get(&n);
-            let content = services_map.get(&n).cloned().unwrap_or_default();
-            let descs = description_lines(&content);
+            let f = files_map.get(&n).cloned().unwrap_or_default();
+            let mut descs = description_lines(&f.port);
+            descs.extend(description_lines(&f.svi));
             let has_descriptions = !descs.is_empty();
             DedupMember {
                 name: n.clone(),
@@ -2509,8 +2580,11 @@ pub async fn dedup_merge_preview(
     }
     let total_devices = devices.len();
 
-    // Refresh canonical port-config preview from disk for display.
-    members[0].descriptions = wrap_lines(description_lines(&canonical_preview));
+    // Refresh canonical descriptions from disk for display — same source
+    // both files used to build the match key.
+    let mut canon_descs = description_lines(&canonical_files.port);
+    canon_descs.extend(description_lines(&canonical_files.svi));
+    members[0].descriptions = wrap_lines(canon_descs);
     members[0].has_descriptions = !members[0].descriptions.is_empty();
 
     let ctx = DedupMergePreviewCtx {

@@ -249,6 +249,14 @@ struct PortGroupCtx {
     /// without any disk writes happening during the lookup.
     suggested_service: String,
     has_suggestion: bool,
+    /// Number of body lines that differ between the device's port body
+    /// and the suggested service's body. 0 = exact match; >0 = fuzzy
+    /// (close but not byte-equal). Surfaced in the UI as a small note
+    /// so the operator knows whether the swap will zero the delta or
+    /// leave a couple of lines.
+    suggested_diff_count: usize,
+    /// True when suggested_diff_count > 0 — fuzzy match, not exact.
+    suggested_is_fuzzy: bool,
     /// If this port's JSON has a non-null `prologue`, the text and a flag
     /// surface "Fold prologue into <service>" UI. The fold is a global
     /// operation across every device that uses the same (service,
@@ -768,12 +776,17 @@ pub async fn reconcile_detail(
     // multi-preview checkbox and the suggestion is ready to go.
     let early_services_map = load_service_port_configs(&cfggen_base, &available_services);
     let early_port_bodies = parse_interface_bodies(&current_tree);
-    let mut port_suggestions: HashMap<String, String> = HashMap::new();
+    // Use the fuzzy matcher (best_fit_existing_service) so 1-2 line
+    // differences still surface as suggestions. The strict matcher
+    // would return None for any port whose body isn't byte-equal to
+    // some service, leaving the operator with no swap proposal even
+    // when one is obviously close.
+    let mut port_suggestions: HashMap<String, (String, usize)> = HashMap::new();
     for (iface_text, body) in &early_port_bodies {
-        if let Some(matched) =
-            aycfggen::port_decomposition::match_port_body_to_existing_service(body, &early_services_map)
+        if let Some((matched, diff)) =
+            aycfggen::port_decomposition::best_fit_existing_service(body, &early_services_map)
         {
-            port_suggestions.insert(iface_text.clone(), matched);
+            port_suggestions.insert(iface_text.clone(), (matched, diff));
         }
     }
 
@@ -875,10 +888,17 @@ pub async fn reconcile_detail(
                             .find(|(m, p, _)| m == module_idx && p == port_name)
                             .map(|(_, _, s)| s.clone());
                         let is_previewing = preview_for_this.is_some();
-                        let suggestion_for_this = port_suggestions
+                        let suggestion_entry = port_suggestions
                             .get(&format!("interface {}", derived_interface))
                             .cloned()
-                            .filter(|s| !s.is_empty() && s != &current_service);
+                            .filter(|(s, _)| !s.is_empty() && s != &current_service);
+                        let suggestion_for_this = suggestion_entry
+                            .as_ref()
+                            .map(|(s, _)| s.clone());
+                        let suggestion_diff = suggestion_entry
+                            .as_ref()
+                            .map(|(_, d)| *d)
+                            .unwrap_or(0);
                         let selected_service = preview_for_this
                             .clone()
                             .or_else(|| suggestion_for_this.clone())
@@ -916,6 +936,8 @@ pub async fn reconcile_detail(
                             previewing_service: preview_for_this.unwrap_or_default(),
                             suggested_service: suggestion_for_this.clone().unwrap_or_default(),
                             has_suggestion: suggestion_for_this.is_some(),
+                            suggested_diff_count: suggestion_diff,
+                            suggested_is_fuzzy: suggestion_diff > 0,
                             has_prologue,
                             prologue_text,
                             resolves_in_preview: false,
@@ -946,6 +968,8 @@ pub async fn reconcile_detail(
                         previewing_service: String::new(),
                         suggested_service: String::new(),
                         has_suggestion: false,
+                        suggested_diff_count: 0,
+                        suggested_is_fuzzy: false,
                         has_prologue: false,
                         prologue_text: String::new(),
                         resolves_in_preview: false,
@@ -1029,10 +1053,12 @@ pub async fn reconcile_detail(
             .iter()
             .find(|(m, p, _)| m == module_idx && p == pn_in_kind)
             .map(|(_, _, s)| s.clone());
-        let suggestion_for_this = port_suggestions
+        let suggestion_entry = port_suggestions
             .get(&format!("interface {}", derived_interface))
             .cloned()
-            .filter(|s| !s.is_empty() && s != &current_service);
+            .filter(|(s, _)| !s.is_empty() && s != &current_service);
+        let suggestion_for_this = suggestion_entry.as_ref().map(|(s, _)| s.clone());
+        let suggestion_diff = suggestion_entry.as_ref().map(|(_, d)| *d).unwrap_or(0);
         let selected_service = preview_for_this
             .clone()
             .or_else(|| suggestion_for_this.clone())
@@ -1072,6 +1098,8 @@ pub async fn reconcile_detail(
                 previewing_service: preview_for_this.unwrap_or_default(),
                 suggested_service: suggestion_for_this.clone().unwrap_or_default(),
                 has_suggestion: suggestion_for_this.is_some(),
+                suggested_diff_count: suggestion_diff,
+                suggested_is_fuzzy: suggestion_diff > 0,
                 has_prologue,
                 prologue_text,
                 resolves_in_preview: true,

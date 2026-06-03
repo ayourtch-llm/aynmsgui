@@ -90,6 +90,12 @@
     <label title="Tick to add this port's swap to a multi-preview batch (uses the dropdown value). Pre-checked when the matcher found a better-fitting service.">
       <input type="checkbox" class="port-multi-include"{{#is_previewing}} checked{{/is_previewing}}{{^is_previewing}}{{#has_suggestion}} checked{{/has_suggestion}}{{/is_previewing}}> include in multi-preview
     </label>
+    {{#suggested_is_fuzzy}}
+    <span style="color:#b07000; font-size:0.85em; margin-left:6px;"
+          title="The suggested service isn't byte-equal to the device's port body — swapping leaves {{suggested_diff_count}} line(s) of delta. Use Preview swap to inspect.">
+      (fuzzy match — {{suggested_diff_count}} line diff)
+    </span>
+    {{/suggested_is_fuzzy}}
   </form>
   {{#has_prologue}}
   <form method="GET" action="/diff/{{name}}/reconcile/fold-prologue" class="port-group-fold-form">

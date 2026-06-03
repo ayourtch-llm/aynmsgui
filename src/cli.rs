@@ -253,10 +253,13 @@ fn cmd_reconcile_suggest(args: &CliArgs, raw: &str) {
             }
         }
         let matched =
-            aycfggen::port_decomposition::match_port_body_to_existing_service(&body, &services_map);
+            aycfggen::port_decomposition::best_fit_existing_service(&body, &services_map);
         let header = &s.header;
         match matched {
-            Some(svc) => println!("{header:<40} → suggested: {svc}"),
+            Some((svc, 0)) => println!("{header:<40} → suggested: {svc} (exact)"),
+            Some((svc, n)) => {
+                println!("{header:<40} → suggested: {svc} (fuzzy — {n} line diff)")
+            }
             None => println!("{header:<40} → (no match)"),
         }
     }

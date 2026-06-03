@@ -363,6 +363,19 @@ struct PortGroupCtx {
     prologue_text: String,
 }
 
+/// One panel per top-level non-interface section (route-map, router
+/// ospf, vrf definition, class-map, etc.) that the diff modifies.
+/// Same inline-diff feel as port_groups: adds and removes interleaved
+/// in walk order so the operator sees the section's delta as a single
+/// hunk. No swap/absorb actions — these sections aren't service-
+/// driven, so the workflow is "edit the template / source by hand."
+#[derive(Serialize)]
+struct SectionGroupCtx {
+    section_header: String,
+    lines: Vec<ReconcileLineCtx>,
+    line_count: usize,
+}
+
 #[derive(Serialize)]
 struct SviGroupCtx {
     service: String,
@@ -440,6 +453,8 @@ struct ReconcileCtx {
     has_port_groups: bool,
     svi_groups: Vec<SviGroupCtx>,
     has_svi_groups: bool,
+    section_groups: Vec<SectionGroupCtx>,
+    has_section_groups: bool,
     /// Drift lines that sit outside any JSON-driven interface (top-
     /// level commands the device has but the template doesn't). Per-
     /// port drift now lives inline in each port_group's `lines` Vec
@@ -748,7 +763,12 @@ pub async fn reconcile_detail(
     }
 
     // Walk the structured events, building (line + chosen prov + interface ctx).
-    let mut walked: Vec<(ReconcileLineCtx, Option<usize>, String)> = Vec::new();
+    // (line_ctx, chosen_idx, iface_ctx, outer_section)
+    // outer_section is the OUTERMOST section header in the ctx_stack
+    // when the line was emitted — used to group non-interface section
+    // changes (route-map, router, vrf, etc.) into their own panels the
+    // same way per-port changes get panels.
+    let mut walked: Vec<(ReconcileLineCtx, Option<usize>, String, String)> = Vec::new();
     let mut ctx_stack: Vec<String> = Vec::new();
     let mut resolved = 0usize;
     let mut unresolved = 0usize;
@@ -845,6 +865,7 @@ pub async fn reconcile_detail(
                 } else {
                     (String::new(), String::new())
                 };
+                let outer_section = ctx_stack.first().cloned().unwrap_or_default();
                 walked.push((
                     ReconcileLineCtx {
                         text: display_text,
@@ -858,6 +879,7 @@ pub async fn reconcile_detail(
                     },
                     chosen_idx,
                     iface_ctx,
+                    outer_section,
                 ));
             }
         }
@@ -922,7 +944,38 @@ pub async fn reconcile_detail(
         }
     }
 
-    for (line_ctx, _chosen_idx, iface_ctx) in walked {
+    // Section-aware grouping for non-interface sections (route-map,
+    // router ospf, vrf definition, etc.) — same map shape as
+    // port_groups_map but keyed by the outermost section header.
+    let mut section_groups_map: HashMap<String, SectionGroupCtx> = HashMap::new();
+
+    for (line_ctx, _chosen_idx, iface_ctx, outer_section) in walked {
+        // Route by the most specific context we can find:
+        //   1. iface_kinds match (JsonPort / TemplatePort / Svi) →
+        //      existing port_groups / svi_groups
+        //   2. else if outer_section is non-empty → section_groups
+        //      (inline-diff panel for the section)
+        //   3. top-level removes → drift_unscoped (splice flow)
+        //   4. top-level adds → other_lines (template / structural)
+        let in_section = !outer_section.is_empty()
+            && !matches!(
+                iface_kinds.get(&iface_ctx),
+                Some(IfaceKind::JsonPort { .. })
+                    | Some(IfaceKind::TemplatePort { .. })
+                    | Some(IfaceKind::Svi { .. })
+            );
+        if in_section {
+            let entry = section_groups_map
+                .entry(outer_section.clone())
+                .or_insert_with(|| SectionGroupCtx {
+                    section_header: outer_section.clone(),
+                    lines: Vec::new(),
+                    line_count: 0,
+                });
+            entry.lines.push(line_ctx);
+            continue;
+        }
+
         // Top-level drift (no interface context, or under a non-JSON
         // interface like a template-baked one or an SVI) becomes a
         // standalone drift_unscoped row — those use the splice-into-
@@ -1371,6 +1424,15 @@ pub async fn reconcile_detail(
         .collect();
     svi_groups.sort_by(|a, b| a.service.cmp(&b.service));
 
+    let mut section_groups: Vec<SectionGroupCtx> = section_groups_map
+        .into_values()
+        .map(|mut g| {
+            g.line_count = g.lines.len();
+            g
+        })
+        .collect();
+    section_groups.sort_by(|a, b| a.section_header.cmp(&b.section_header));
+
     // Per-port drift already sits inside its port group as a "remove"
     // ReconcileLineCtx (preserving walk order alongside the adds), so
     // all that's left in drift_lines is top-level drift that goes
@@ -1413,6 +1475,7 @@ pub async fn reconcile_detail(
         hostname,
         has_delta: !port_groups.is_empty()
             || !svi_groups.is_empty()
+            || !section_groups.is_empty()
             || !drift_unscoped.is_empty()
             || !other_lines.is_empty(),
         affected_services: affected_services_set.len(),
@@ -1430,6 +1493,8 @@ pub async fn reconcile_detail(
         port_groups,
         has_svi_groups: !svi_groups.is_empty(),
         svi_groups,
+        has_section_groups: !section_groups.is_empty(),
+        section_groups,
         has_drift_unscoped: !drift_unscoped.is_empty(),
         drift_unscoped,
         has_other_lines: !other_lines.is_empty(),

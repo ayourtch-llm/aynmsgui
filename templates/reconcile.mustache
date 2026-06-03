@@ -173,6 +173,42 @@
 {{/svi_groups}}
 {{/has_svi_groups}}
 
+{{#has_section_groups}}
+<h2>Other section changes</h2>
+<p style="color:#666; font-size:0.9em;">
+  One panel per top-level non-interface section the diff modifies
+  (<code>route-map</code>, <code>router ospf</code>, <code>vrf definition</code>, etc.).
+  <span style="color:#1b5e20;">Green</span> = lines the target will add,
+  <span style="color:#b71c1c;">red</span> = drift the target will negate.
+  Source column shows where the line came from in the template — edit
+  the template at that location to absorb the change, or splice from
+  the top-level drift section below if the line isn't anchored.
+</p>
+{{#section_groups}}
+<details class="port-group" open>
+  <summary>
+    <strong>{{section_header}}</strong>
+    &nbsp;·&nbsp; {{line_count}} delta line(s)
+  </summary>
+  <table class="reconcile-table">
+    <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>
+    <tbody>
+    {{#lines}}
+    <tr class="rec-{{direction}}">
+      <td><pre class="rec-line">{{text}}</pre></td>
+      <td>
+        {{#source_label}}
+        <span class="rec-src-badge {{source_class}}">{{source_label}}</span>
+        {{/source_label}}
+      </td>
+    </tr>
+    {{/lines}}
+    </tbody>
+  </table>
+</details>
+{{/section_groups}}
+{{/has_section_groups}}
+
 {{#has_drift_unscoped}}
 <h2>Top-level drift (no interface context)</h2>
 <p style="color:#666; font-size:0.9em;">

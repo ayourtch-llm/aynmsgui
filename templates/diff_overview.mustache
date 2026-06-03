@@ -20,6 +20,12 @@
     {{#is_stack}}
     <span class="stack-badge" title="Stack of {{chassis_count}} chassis: {{chassis_serials}}">stack: {{chassis_count}}</span>
     {{/is_stack}}
+    {{#has_duplicate_serial}}
+    <span class="dup-badge" title="Same serial appears on more than one module slot — likely an import-time artifact. Details: {{duplicate_serial_info}}">?</span>
+    {{/has_duplicate_serial}}
+    {{#is_named_after_serial}}
+    <span class="dup-badge" title="The logical-device folder is named after the chassis serial (possibly an import-time fallback when no hostname could be derived).">?serial-named</span>
+    {{/is_named_after_serial}}
   </td>
   <td>{{hostname}}</td>
   <td>{{status_text}}</td>

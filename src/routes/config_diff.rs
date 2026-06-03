@@ -59,6 +59,22 @@ pub struct DiffOverviewItem {
     /// Serials of every non-stub module, comma-separated for the badge
     /// tooltip. Empty when chassis_count <= 1.
     pub chassis_serials: String,
+    /// True when the device JSON has the same non-empty serial on more
+    /// than one module slot (e.g. a stub slot-0 with serial=X plus a
+    /// real slot-1 with the same serial). Functionally harmless, but
+    /// almost certainly an extraction-time artifact worth auditing —
+    /// surfaces as a "?" pill on the row.
+    pub has_duplicate_serial: bool,
+    /// The duplicated serial (the one that appears on >1 module) and
+    /// the slot indices it sits on. Empty when has_duplicate_serial
+    /// is false.
+    pub duplicate_serial_info: String,
+    /// True when the logical-device folder is named after the chassis
+    /// serial (e.g. directory `logical-devices/FOC1942W4JY/` for a
+    /// device that's really AD6-X068). Almost always an import-time
+    /// artifact — the importer fell back to serial because it couldn't
+    /// derive a hostname.
+    pub is_named_after_serial: bool,
 }
 
 /// How many delta lines to embed in the overview preview before
@@ -234,6 +250,12 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         let device_name = logical_names
             .map(|names| names.join(", "))
             .unwrap_or_else(|| "-".to_string());
+        // Catch the "logical-device folder was named after the chassis
+        // serial" import artifact — happens when extract couldn't derive
+        // a hostname so it used the serial as the directory name.
+        let is_named_after_serial = logical_names
+            .map(|names| names.iter().any(|n| n == &name))
+            .unwrap_or(false);
 
         // Hostname: live seen_assets hostname first; if that's missing,
         // fall back to the hostname configured in any of the matching
@@ -265,33 +287,65 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
         // a stub slot-0 carrying the chassis serial is NOT a stack —
         // that's just an extraction-time placeholder shared with the
         // real module.
-        let (is_stack, chassis_count, chassis_serials) = logical_names
-            .and_then(|names| names.first())
-            .and_then(|ln| device_configs.get(ln))
-            .map(|cfg| {
-                let mut serials: Vec<String> = Vec::new();
-                let mut seen_set: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
-                if let Some(modules) = cfg.get("modules").and_then(|m| m.as_array()) {
-                    for module in modules {
-                        let sku = module.get("SKU").and_then(|v| v.as_str()).unwrap_or("");
-                        if sku.is_empty() {
-                            continue; // stub
-                        }
-                        if let Some(s) = module
-                            .get("serial")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                        {
-                            if seen_set.insert(s.to_string()) {
-                                serials.push(s.to_string());
+        let (is_stack, chassis_count, chassis_serials, has_duplicate_serial, duplicate_serial_info) =
+            logical_names
+                .and_then(|names| names.first())
+                .and_then(|ln| device_configs.get(ln))
+                .map(|cfg| {
+                    let mut serials: Vec<String> = Vec::new();
+                    let mut seen_set: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    // serial → list of slot indices it appears in
+                    let mut serial_slots: std::collections::HashMap<String, Vec<usize>> =
+                        std::collections::HashMap::new();
+                    if let Some(modules) = cfg.get("modules").and_then(|m| m.as_array()) {
+                        for (i, module) in modules.iter().enumerate() {
+                            let sku = module.get("SKU").and_then(|v| v.as_str()).unwrap_or("");
+                            let serial_opt = module
+                                .get("serial")
+                                .and_then(|v| v.as_str())
+                                .filter(|s| !s.is_empty());
+                            if let Some(s) = serial_opt {
+                                serial_slots
+                                    .entry(s.to_string())
+                                    .or_default()
+                                    .push(i);
+                            }
+                            if !sku.is_empty() {
+                                if let Some(s) = serial_opt {
+                                    if seen_set.insert(s.to_string()) {
+                                        serials.push(s.to_string());
+                                    }
+                                }
                             }
                         }
                     }
-                }
-                (serials.len() > 1, serials.len(), serials.join(", "))
-            })
-            .unwrap_or((false, 0, String::new()));
+                    let dupes: Vec<(String, Vec<usize>)> = serial_slots
+                        .into_iter()
+                        .filter(|(_, slots)| slots.len() > 1)
+                        .collect();
+                    let has_dupe = !dupes.is_empty();
+                    let dupe_info = dupes
+                        .into_iter()
+                        .map(|(s, slots)| {
+                            let slot_list = slots
+                                .iter()
+                                .map(|i| format!("slot {}", i))
+                                .collect::<Vec<_>>()
+                                .join(" + ");
+                            format!("{s} on {slot_list}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    (
+                        serials.len() > 1,
+                        serials.len(),
+                        serials.join(", "),
+                        has_dupe,
+                        dupe_info,
+                    )
+                })
+                .unwrap_or((false, 0, String::new(), false, String::new()));
 
         // Retrieve-button gating: disabled if the device isn't in
         // seen_assets at all, or its last_seen is past the freshness
@@ -325,6 +379,9 @@ pub async fn diff_overview(State(state): State<AppState>) -> Response {
             is_stack,
             chassis_count,
             chassis_serials,
+            has_duplicate_serial,
+            duplicate_serial_info,
+            is_named_after_serial,
         });
     }
     drop(seen);

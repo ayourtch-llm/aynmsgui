@@ -210,6 +210,21 @@ tbody tr:hover { background-color: #e3edf7; }
     color: #224380;
     font-weight: 600;
 }
+/* "?" pill for likely import-time artifacts (duplicate serials across
+ * module slots, logical-device folder named after the serial, etc.).
+ * Yellow to draw the eye for audit; tooltip explains the specifics. */
+.dup-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    background: #fff7e0;
+    border: 1px solid #f0c060;
+    border-radius: 3px;
+    font-size: 0.78em;
+    color: #6d4c00;
+    font-weight: 600;
+    cursor: help;
+}
 
 /* Diff overview row status: tint the Status cell instead of the whole row
  * so zebra/hover effects still show. The diff_overview table has the

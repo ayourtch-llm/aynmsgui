@@ -5,8 +5,9 @@
 
 <div class="reconcile-summary">
   <div><strong>Service file:</strong> <code>{{service_path}}</code></div>
-  <div><strong>Per-port prologues across fleet:</strong>
-       <strong>{{total_ports}}</strong> port(s) across <strong>{{total_devices}}</strong> device(s)</div>
+  <div><strong>Total port assignments across fleet:</strong> {{total_port_count}}</div>
+  <div><strong>Already clean (no prologue):</strong>
+    {{null_port_count}} port(s) across {{null_device_count}} device(s)</div>
 </div>
 
 <details style="margin: 12px 0;">
@@ -15,10 +16,18 @@
 </details>
 
 {{^has_rows}}
-<p style="color:#888;"><em>No ports reference this service.</em></p>
+<p style="color:#1b5e20; font-weight:600;">
+  ✓ Nothing to fold for this service — every port using it already has <code>prologue: null</code>.
+</p>
 {{/has_rows}}
 
 {{#has_rows}}
+<h2>Fold candidates</h2>
+<p style="color:#666; font-size:0.9em;">
+  Each row below is a distinct prologue value currently attached to this service across the
+  fleet. Click <em>Fold into service</em> to prepend the line to <code>{{service_path}}</code>
+  and clear the prologue field on every matching port.
+</p>
 <table class="reconcile-table">
 <thead>
 <tr>
@@ -31,22 +40,16 @@
 </thead>
 <tbody>
 {{#rows}}
-<tr class="{{#is_null}}rec-null-prologue{{/is_null}}">
-  <td>
-    {{#is_null}}<em style="color:#888;">{{prologue_display}}</em>{{/is_null}}
-    {{^is_null}}<code>{{prologue_display}}</code>{{/is_null}}
-  </td>
+<tr>
+  <td><code>{{prologue_display}}</code></td>
   <td>{{port_count}}</td>
   <td>{{device_count}}</td>
   <td><code style="font-size:0.85em; color:#555;">{{devices_preview}}</code></td>
   <td>
-    {{^is_null}}
     <form method="GET" action="/reconcile/services/{{service}}/fold-prologue" style="display:inline;">
       <input type="hidden" name="prologue" value="{{prologue}}">
       <button type="submit" title="Move this line into {{service}}/port-config.txt and clear the prologue field on all matching ports">Fold into service …</button>
     </form>
-    {{/is_null}}
-    {{#is_null}}<em style="color:#888;">already clean</em>{{/is_null}}
   </td>
 </tr>
 {{/rows}}

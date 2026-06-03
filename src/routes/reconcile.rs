@@ -1620,10 +1620,17 @@ struct ServiceDetailCtx {
     service: String,
     service_path: String,
     port_config_preview: String,
+    /// Only non-null prologue rows — actual fold candidates.
     rows: Vec<ServicePrologueRow>,
     has_rows: bool,
-    total_devices: usize,
-    total_ports: usize,
+    /// "X ports across Y devices" summary for the (possibly empty) set
+    /// of ports that already have prologue: null — informational only,
+    /// never a fold candidate.
+    null_port_count: usize,
+    null_device_count: usize,
+    /// "(N total ports use this service across the fleet, M of them
+    /// already have no prologue)" — for the section header.
+    total_port_count: usize,
 }
 
 pub async fn service_detail(
@@ -1648,54 +1655,38 @@ pub async fn service_detail(
     let port_config_preview = std::fs::read_to_string(&port_config_path).unwrap_or_default();
 
     let prologues = collect_service_prologues(&cfggen_base, &svc);
-    let mut rows: Vec<ServicePrologueRow> = prologues
-        .into_iter()
-        .map(|p| {
-            let device_count = p.devices.len();
-            let port_count: usize = p.devices.iter().map(|(_, ports)| ports.len()).sum();
-            let mut names: Vec<&str> = p.devices.iter().map(|(n, _)| n.as_str()).collect();
-            names.sort();
-            let preview = if names.len() <= 4 {
-                names.join(", ")
-            } else {
-                format!(
-                    "{} (+{} more)",
-                    names[..4].join(", "),
-                    names.len() - 4
-                )
-            };
-            ServicePrologueRow {
-                prologue_display: if p.is_null {
-                    "(no prologue)".to_string()
-                } else {
-                    p.prologue.trim_start().to_string()
-                },
-                is_null: p.is_null,
-                prologue: p.prologue,
-                port_count,
-                device_count,
-                devices_preview: preview,
-                service: svc.clone(),
-            }
-        })
-        .collect();
-    // Fold candidates first (largest impact), null-prologue summary last.
-    rows.sort_by(|a, b| {
-        a.is_null
-            .cmp(&b.is_null)
-            .then_with(|| b.port_count.cmp(&a.port_count))
-    });
+    let mut null_port_count = 0usize;
+    let mut null_device_count = 0usize;
+    let mut rows: Vec<ServicePrologueRow> = Vec::new();
+    for p in prologues {
+        let device_count = p.devices.len();
+        let port_count: usize = p.devices.iter().map(|(_, ports)| ports.len()).sum();
+        if p.is_null {
+            null_device_count = device_count;
+            null_port_count = port_count;
+            continue;
+        }
+        let mut names: Vec<&str> = p.devices.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort();
+        let preview = if names.len() <= 4 {
+            names.join(", ")
+        } else {
+            format!("{} (+{} more)", names[..4].join(", "), names.len() - 4)
+        };
+        rows.push(ServicePrologueRow {
+            prologue_display: p.prologue.trim_start().to_string(),
+            is_null: false,
+            prologue: p.prologue,
+            port_count,
+            device_count,
+            devices_preview: preview,
+            service: svc.clone(),
+        });
+    }
+    // Largest impact first.
+    rows.sort_by(|a, b| b.port_count.cmp(&a.port_count));
 
-    let total_devices = rows
-        .iter()
-        .filter(|r| !r.is_null)
-        .map(|r| r.device_count)
-        .sum::<usize>();
-    let total_ports = rows
-        .iter()
-        .filter(|r| !r.is_null)
-        .map(|r| r.port_count)
-        .sum::<usize>();
+    let total_port_count = rows.iter().map(|r| r.port_count).sum::<usize>() + null_port_count;
 
     let ctx = ServiceDetailCtx {
         service: svc.clone(),
@@ -1703,8 +1694,9 @@ pub async fn service_detail(
         port_config_preview,
         has_rows: !rows.is_empty(),
         rows,
-        total_devices,
-        total_ports,
+        null_port_count,
+        null_device_count,
+        total_port_count,
     };
     let html = state
         .templates
@@ -1871,7 +1863,9 @@ struct ServiceUsageRaw {
 fn collect_service_usage(cfggen_base: &std::path::Path) -> Vec<ServiceUsageRaw> {
     let mut usage: std::collections::HashMap<String, ServiceUsageRaw> =
         std::collections::HashMap::new();
-    let mut prologues_per_service: std::collections::HashMap<
+    // Only count NON-NULL distinct prologues — the column is the "things
+    // worth folding" count, not "values seen including the null/clean ones."
+    let mut nonnull_prologues_per_service: std::collections::HashMap<
         String,
         std::collections::HashSet<String>,
     > = std::collections::HashMap::new();
@@ -1897,22 +1891,21 @@ fn collect_service_usage(cfggen_base: &std::path::Path) -> Vec<ServiceUsageRaw> 
                         });
                         entry.devices.insert(device_name.to_string());
                         entry.port_count += 1;
-                        let prologue_key = port
-                            .get("prologue")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "<null>".to_string());
-                        prologues_per_service
-                            .entry(svc)
-                            .or_default()
-                            .insert(prologue_key);
+                        if let Some(prologue) =
+                            port.get("prologue").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+                        {
+                            nonnull_prologues_per_service
+                                .entry(svc)
+                                .or_default()
+                                .insert(prologue.to_string());
+                        }
                     }
                 }
             }
         }
     });
 
-    for (svc, set) in prologues_per_service {
+    for (svc, set) in nonnull_prologues_per_service {
         if let Some(entry) = usage.get_mut(&svc) {
             entry.distinct_prologue_count = set.len();
         }

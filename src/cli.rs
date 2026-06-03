@@ -79,6 +79,12 @@ enum Cmd {
         #[arg(long, default_value = "data/target-configs-preview", env = "AYNMSGUI_TARGET_CONFIGS_PREVIEW_PATH")]
         target_configs_preview: PathBuf,
     },
+    /// For each port that has any delta lines on this device, print
+    /// what the import matcher suggests as the alternate service —
+    /// the same lookup the /reconcile page surfaces as a blue badge.
+    /// Lets us debug "why doesn't this port get a suggestion?"
+    /// without spinning up the server.
+    ReconcileSuggest { device: String },
     /// Recompile every logical device under
     /// `<cfggen-base>/logical-devices/`. Useful after a structural cfggen
     /// change (e.g. new `!` separator emission) so every target config
@@ -110,6 +116,7 @@ pub fn run(argv: Vec<String>) {
     match &args.cmd {
         Cmd::Reconcile { device } => cmd_reconcile(&args, device),
         Cmd::ReconcileGroups { device } => cmd_reconcile_groups(&args, device),
+        Cmd::ReconcileSuggest { device } => cmd_reconcile_suggest(&args, device),
         Cmd::Recompile {
             device,
             target_configs,
@@ -207,6 +214,52 @@ fn cmd_reconcile(args: &CliArgs, raw: &str) {
     println!("# Delta tree walk, sections indent the lines that belong to them.");
     let mut ctx: Vec<String> = Vec::new();
     walk(&diff.actions, &mut ctx, &by_text, &provs);
+}
+
+fn cmd_reconcile_suggest(args: &CliArgs, raw: &str) {
+    let Some(device_name) = resolve_device_name(&args.cfggen_base, raw) else {
+        eprintln!("error: could not resolve '{raw}' to a logical device");
+        std::process::exit(2);
+    };
+    let current_norm = aycfgapply::normalize::normalize_config(&current_text(args, &device_name));
+    let rules = aycicdiff::rules::RulesConfig::builtin();
+    let current_tree = aycicdiff::parser::parse_config(&current_norm, &rules);
+
+    // Load services and call the matcher per port's body.
+    let services_dir = args.cfggen_base.join("services");
+    let mut services_map: HashMap<String, String> = HashMap::new();
+    if let Ok(entries) = std::fs::read_dir(&services_dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                let p = entry.path().join("port-config.txt");
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    services_map.insert(name.to_string(), content);
+                }
+            }
+        }
+    }
+
+    for node in &current_tree.nodes {
+        use aycicdiff::model::config_tree::ConfigNode;
+        let ConfigNode::Section(s) = node else { continue };
+        if !s.header.starts_with("interface ") {
+            continue;
+        }
+        let mut body: Vec<String> = Vec::new();
+        for child in &s.children {
+            match child {
+                ConfigNode::Leaf(l) => body.push(format!(" {}", l.text)),
+                ConfigNode::Section(sec) => body.push(format!(" {}", sec.header)),
+            }
+        }
+        let matched =
+            aycfggen::port_decomposition::match_port_body_to_existing_service(&body, &services_map);
+        let header = &s.header;
+        match matched {
+            Some(svc) => println!("{header:<40} → suggested: {svc}"),
+            None => println!("{header:<40} → (no match)"),
+        }
+    }
 }
 
 fn cmd_recompile(

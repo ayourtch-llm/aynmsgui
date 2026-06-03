@@ -47,7 +47,28 @@ use aycfggen::sources::LogicalDeviceSource;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::routes::devices::{load_all_device_configs, serial_to_device_names};
 use crate::state::AppState;
+
+/// `/diff` is keyed by device serial (matches the `.cfg` filename in
+/// `target_configs/`), but `logical-devices/` is keyed by the logical
+/// device name. Resolve the URL's `{name}` against both: if it's a real
+/// logical-device name use it; otherwise treat it as a serial and look
+/// up the logical device name(s) referencing that serial.
+///
+/// Returns the logical-device name to load configs by, or `None` if the
+/// input doesn't resolve.
+fn resolve_to_device_name(cfggen_base: &std::path::Path, raw: &str) -> Option<String> {
+    let logical_dir = cfggen_base.join("logical-devices");
+    if logical_dir.join(format!("{}.json", raw)).exists()
+        || logical_dir.join(raw).join("config.json").exists()
+    {
+        return Some(raw.to_string());
+    }
+    let configs = load_all_device_configs(cfggen_base);
+    let map = serial_to_device_names(&configs);
+    map.get(raw).and_then(|names| names.first().cloned())
+}
 
 // ── View models ──────────────────────────────────────────────────────────────
 
@@ -202,6 +223,20 @@ pub async fn reconcile_detail(
 
     debug!(name = %name, "Loading reconcile page");
 
+    // The URL's {name} can be either a logical-device name (e.g. AD6-X001)
+    // or a device serial (e.g. FCW2228L054 — that's what /diff lists). Map
+    // it to the logical device name we'll feed the compile pipeline.
+    let device_name_for_compile = match resolve_to_device_name(&cfggen_base, &name) {
+        Some(n) => n,
+        None => {
+            let msg = format!(
+                "Could not map '{name}' to a logical device — no logical-device JSON \
+                 by that name and no device JSON references it as a module serial."
+            );
+            return message(&state, "Unknown device", &msg, Some(("/diff", "Back")));
+        }
+    };
+
     use aycfggen::compile_traced::compile_device_traced;
     use aycfggen::fs_sources::{
         FsConfigElementSource, FsConfigTemplateSource, FsHardwareTemplateSource,
@@ -216,7 +251,7 @@ pub async fn reconcile_detail(
 
     // Load the device config so we can inspect current per-port services and
     // (optionally) build the override for preview.
-    let real_config = match device_source.load_device_config(&name) {
+    let real_config = match device_source.load_device_config(&device_name_for_compile) {
         Ok(c) => c,
         Err(err) => {
             warn!(name = %name, error = %err, "load_device_config failed");
@@ -259,11 +294,11 @@ pub async fn reconcile_detail(
     let traced_result = if let Some(override_cfg) = override_config.as_ref() {
         let override_source = OverrideLogicalDeviceSource {
             inner: &device_source,
-            device: name.clone(),
+            device: device_name_for_compile.clone(),
             override_config: override_cfg.clone(),
         };
         compile_device_traced(
-            &name,
+            &device_name_for_compile,
             &override_source,
             &hw_source,
             &service_source,
@@ -273,7 +308,7 @@ pub async fn reconcile_detail(
         )
     } else {
         compile_device_traced(
-            &name,
+            &device_name_for_compile,
             &device_source,
             &hw_source,
             &service_source,
@@ -630,9 +665,21 @@ pub async fn swap_service(
         _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
     };
 
+    let device_name = match resolve_to_device_name(&cfggen_base, &name) {
+        Some(n) => n,
+        None => {
+            return message(
+                &state,
+                "Unknown device",
+                &format!("Could not map '{name}' to a logical device"),
+                Some(("/diff", "Back")),
+            )
+        }
+    };
+
     // Locate the device JSON (flat or directory layout).
-    let flat = cfggen_base.join("logical-devices").join(format!("{}.json", name));
-    let dir = cfggen_base.join("logical-devices").join(&name).join("config.json");
+    let flat = cfggen_base.join("logical-devices").join(format!("{}.json", device_name));
+    let dir = cfggen_base.join("logical-devices").join(&device_name).join("config.json");
     let json_path = if flat.exists() {
         flat
     } else if dir.exists() {
@@ -641,7 +688,7 @@ pub async fn swap_service(
         return message(
             &state,
             "Device not found",
-            &format!("No logical-device JSON for '{name}'"),
+            &format!("No logical-device JSON for '{device_name}'"),
             Some(("/diff", "Back")),
         );
     };
@@ -704,13 +751,13 @@ pub async fn swap_service(
         return message(&state, "Write failed", &format!("{e}"), None);
     }
     info!(
-        device = %name, port = %form.port_name, service = %form.service,
+        device = %device_name, port = %form.port_name, service = %form.service,
         "Swapped port service via reconcile"
     );
 
     // Recompile target. compile_device_config writes to both preview and
     // target_configs_path so the /diff page picks it up.
-    if let Err(e) = crate::routes::devices::compile_device_config(&name, &cfggen_base, &state.config) {
+    if let Err(e) = crate::routes::devices::compile_device_config(&device_name, &cfggen_base, &state.config) {
         warn!(error = %e, "Recompile after swap failed");
     }
 
@@ -727,6 +774,18 @@ pub async fn absorb_drift(
     let cfggen_base = match &state.config.cfggen_base_dir {
         Some(p) if p.exists() => p.clone(),
         _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+
+    let device_name = match resolve_to_device_name(&cfggen_base, &name) {
+        Some(n) => n,
+        None => {
+            return message(
+                &state,
+                "Unknown device",
+                &format!("Could not map '{name}' to a logical device"),
+                Some(("/diff", "Back")),
+            )
+        }
     };
 
     let service_dir = cfggen_base.join("services").join(&form.service);
@@ -760,11 +819,11 @@ pub async fn absorb_drift(
         return message(&state, "Write failed", &format!("{e}"), None);
     }
     info!(
-        device = %name, service = %form.service, cmd = %cmd,
+        device = %device_name, service = %form.service, cmd = %cmd,
         "Absorbed drift command into service"
     );
 
-    if let Err(e) = crate::routes::devices::compile_device_config(&name, &cfggen_base, &state.config) {
+    if let Err(e) = crate::routes::devices::compile_device_config(&device_name, &cfggen_base, &state.config) {
         warn!(error = %e, "Recompile after absorb failed");
     }
 

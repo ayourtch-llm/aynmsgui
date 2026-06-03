@@ -194,9 +194,12 @@
       <input type="hidden" name="template_path" value="{{splice_template_path}}">
       <input type="hidden" name="after_line" value="{{splice_after_line}}">
       <input type="hidden" name="line" value="{{bare_cmd}}">
-      <button type="submit" title="Insert this command into {{splice_template_path}} {{#splice_anchor}}right after `{{splice_anchor}}` (line {{splice_after_line}}){{/splice_anchor}}{{^splice_anchor}}at the end of file{{/splice_anchor}}">Splice into template</button>
+      <button type="submit" title="Insert this command into {{splice_template_path}} {{#splice_anchor}}at end of `{{splice_anchor}}`'s block (line {{splice_after_line}}){{/splice_anchor}}{{^splice_anchor}}at the end of file{{/splice_anchor}}">Splice into template</button>
     </form>
     {{/can_splice}}
+    {{#splice_already_at}}
+    <em style="color:#b07000;" title="Splice refused: this exact line already lives in the template at line {{splice_already_at}}, so inserting another copy would corrupt section structure (the bug seen earlier). It's showing as drift because the compile pipeline isn't emitting it — fix that root cause instead.">already in template at line {{splice_already_at}}</em>
+    {{/splice_already_at}}
   </td>
 </tr>
 {{/drift_unscoped}}

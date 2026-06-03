@@ -199,6 +199,104 @@ struct ServiceOptionCtx {
     prefix: String,
 }
 
+/// Count the leading whitespace (spaces and tabs) on a config line.
+/// Cisco config uses indent depth for sub-mode nesting, so this drives
+/// the splice algorithm's "end of containing block" search.
+fn count_leading_spaces(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ' || *c == '\t').count()
+}
+
+/// For a line at `pos` in `lines`, return the top-down path of section
+/// headers it sits inside, by walking backwards through any line at
+/// strictly LESS indent. Cisco config blocks are indent-defined so each
+/// less-indented predecessor is one level up.
+///
+/// Example: line " match interface Gi1/1/2" at pos N inside
+///   route-map FILTER deny 20    (pos N-3, indent 0)
+///    match ip address X         (pos N-1, indent 1)
+///    match interface ...        (pos N,   indent 1)
+/// returns ["route-map FILTER deny 20"].
+fn enclosing_section_path<'a>(lines: &[&'a str], pos: usize) -> Vec<&'a str> {
+    if pos >= lines.len() {
+        return Vec::new();
+    }
+    let target_indent = count_leading_spaces(lines[pos]);
+    let mut path: Vec<&'a str> = Vec::new();
+    let mut next_target_indent = target_indent;
+    if next_target_indent == 0 {
+        return path; // top-level line, no section above it
+    }
+    for i in (0..pos).rev() {
+        let line = lines[i];
+        if line.trim().is_empty() {
+            continue;
+        }
+        let indent = count_leading_spaces(line);
+        if indent < next_target_indent {
+            path.push(line.trim());
+            if indent == 0 {
+                break;
+            }
+            next_target_indent = indent;
+        }
+    }
+    path.reverse();
+    path
+}
+
+/// Walk `lines` tracking current section nesting (indent-based) and
+/// return the (start_idx, end_idx) of the INNERMOST section matching
+/// the full `path`, or None if any header in the path doesn't appear
+/// in its expected nesting position. `end_idx` is the line after the
+/// section's last child — i.e. insertion at `end_idx` puts a new
+/// child line as the last child of the matched section.
+fn find_template_section_range(lines: &[&str], path: &[&str]) -> Option<(usize, usize)> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut stack: Vec<(usize, &str)> = Vec::new(); // (indent, header_trimmed)
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indent = count_leading_spaces(line);
+        // Pop sections we've exited (a sibling-or-shallower line ends them).
+        while let Some(&(s_indent, _)) = stack.last() {
+            if indent <= s_indent {
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+        // If this line's text matches the next expected header in the
+        // path AND its indent fits below the current stack, push it.
+        let expected_idx = stack.len();
+        if expected_idx < path.len() && path[expected_idx] == trimmed {
+            stack.push((indent, trimmed));
+            if stack.len() == path.len() {
+                // We're now sitting at the matched innermost header.
+                // Its block ends at the first subsequent line at indent
+                // <= this header's indent.
+                let section_indent = indent;
+                let start = i;
+                let mut end = i + 1;
+                while end < lines.len() {
+                    let trimmed_next = lines[end].trim();
+                    if !trimmed_next.is_empty()
+                        && count_leading_spaces(lines[end]) <= section_indent
+                    {
+                        break;
+                    }
+                    end += 1;
+                }
+                return Some((start, end));
+            }
+        }
+    }
+    None
+}
+
 fn service_option_prefix(is_current: bool, is_suggested: bool) -> String {
     let mut s = String::with_capacity(2);
     s.push(if is_current { '*' } else { ' ' });
@@ -307,6 +405,12 @@ struct DriftLineCtx {
     /// The text of the template line we'd insert after (for the button
     /// tooltip). Empty when splicing at end of file.
     splice_anchor: String,
+    /// 1-based line number where this exact line already lives in the
+    /// template (if any). When >0 we suppress the splice button and
+    /// surface "already at line N — fix the template by hand" — the
+    /// fact that this line is still showing as drift despite being in
+    /// the template signals a structural issue worth a human eye.
+    splice_already_at: usize,
 }
 
 #[derive(Serialize)]
@@ -847,6 +951,7 @@ pub async fn reconcile_detail(
                 splice_template_path: String::new(),
                 splice_after_line: 0,
                 splice_anchor: String::new(),
+                splice_already_at: 0,
             });
             continue;
         }
@@ -1157,30 +1262,96 @@ pub async fn reconcile_detail(
             if drift_text_trim.is_empty() {
                 continue;
             }
+
+            // Dedup: if the bare command already appears verbatim
+            // (trimmed) in the template, refuse to splice. A line
+            // that's in the template AND on the device but still
+            // shows as drift means our compile pipeline lost it
+            // somewhere — splicing again would silently duplicate it
+            // and the next render would corrupt section structure
+            // (the bug that prompted this fix). Surface as
+            // "already at line N" instead.
+            if let Some(existing_idx) = template_lines
+                .iter()
+                .position(|l| l.trim() == drift_text_trim)
+            {
+                d.can_splice = false;
+                d.splice_template_path = template_path_rel.clone();
+                d.splice_already_at = existing_idx + 1;
+                continue;
+            }
+
             let Some(drift_pos) = device_lines
                 .iter()
                 .position(|l| l.trim() == drift_text_trim)
             else {
                 continue;
             };
-            // Walk backwards from drift_pos looking for the first
-            // device line that also appears in the template.
-            let mut anchor_at: Option<(usize, String)> = None;
-            for i in (0..drift_pos).rev() {
-                let cand = device_lines[i].trim();
-                if cand.is_empty() {
-                    continue;
-                }
-                if let Some(tpos) = template_lines.iter().position(|l| l.trim() == cand) {
-                    anchor_at = Some((tpos + 1, cand.to_string())); // 1-based, insert AFTER
-                    break;
-                }
-            }
+
             d.can_splice = true;
             d.splice_template_path = template_path_rel.clone();
-            match anchor_at {
-                Some((line_no, anchor_text)) => {
-                    d.splice_after_line = line_no;
+
+            // Strategy 1: if the drift line sits inside a section
+            // (e.g. " match interface X" under a `route-map FILTER
+            // deny 20` block), find that exact section path in the
+            // template and insert at the end of the matching block.
+            // This is the right answer for any indented drift —
+            // covers route-map, class-map, policy-map, router ospf,
+            // vrf definition, etc. — not just `interface`.
+            let section_path = enclosing_section_path(&device_lines, drift_pos);
+            let insert_via_section = if !section_path.is_empty() {
+                find_template_section_range(&template_lines, &section_path).map(
+                    |(start, end)| (end, template_lines[start].trim().to_string()),
+                )
+            } else {
+                None
+            };
+
+            // Strategy 2 (fallback for top-level drift OR when the
+            // section path doesn't exist in the template): walk
+            // backwards from drift_pos for the first device line that
+            // ALSO appears in the template, then insert at the end of
+            // that anchor's block. End-of-block instead of right-
+            // after-header so we don't accidentally insert a top-
+            // level line inside a sub-mode block (which would re-
+            // parent the children to the new opener).
+            let insert_via_anchor = if insert_via_section.is_none() {
+                let mut anchor_at: Option<(usize, String)> = None;
+                for i in (0..drift_pos).rev() {
+                    let cand = device_lines[i].trim();
+                    if cand.is_empty() {
+                        continue;
+                    }
+                    if let Some(tpos) =
+                        template_lines.iter().position(|l| l.trim() == cand)
+                    {
+                        anchor_at = Some((tpos, cand.to_string()));
+                        break;
+                    }
+                }
+                anchor_at.map(|(anchor_idx, anchor_text)| {
+                    let anchor_indent = count_leading_spaces(template_lines[anchor_idx]);
+                    let drift_indent = count_leading_spaces(device_lines[drift_pos]);
+                    let insert_idx = if drift_indent <= anchor_indent {
+                        let mut end = anchor_idx + 1;
+                        while end < template_lines.len()
+                            && count_leading_spaces(template_lines[end]) > anchor_indent
+                        {
+                            end += 1;
+                        }
+                        end
+                    } else {
+                        anchor_idx + 1
+                    };
+                    (insert_idx, anchor_text)
+                })
+            } else {
+                None
+            };
+
+            match insert_via_section.or(insert_via_anchor) {
+                Some((insert_idx, anchor_text)) => {
+                    d.splice_after_line = insert_idx;
                     d.splice_anchor = anchor_text;
                 }
                 None => {
@@ -3427,12 +3598,32 @@ pub async fn splice_template(
         Err(e) => return message(&state, "I/O error", &format!("{e}"), None),
     };
     let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let line_text = form.line.trim_end().to_string();
+    let line_trim = line_text.trim();
+    // Defensive dedup: the GET pass refuses splice when the line is
+    // already in the template, but a stale form (or someone hand-
+    // crafting a POST) could still hit this. Refuse to add a
+    // duplicate — silently inserting a second copy is what broke
+    // section structure for the operator the last time.
+    if !line_trim.is_empty() {
+        if let Some(existing_idx) = lines.iter().position(|l| l.trim() == line_trim) {
+            return message(
+                &state,
+                "Already in template",
+                &format!(
+                    "Line `{line_trim}` already lives at {}:{} — refusing to insert a duplicate. If it's still showing as drift, the compile pipeline isn't emitting it; fix that root cause instead.",
+                    tpl_name,
+                    existing_idx + 1
+                ),
+                Some((&format!("/diff/{}/reconcile", name), "Back to reconcile")),
+            );
+        }
+    }
     let insert_at = if form.after_line == 0 {
         lines.len()
     } else {
         std::cmp::min(form.after_line, lines.len())
     };
-    let line_text = form.line.trim_end().to_string();
     lines.insert(insert_at, line_text.clone());
 
     let mut new_content = lines.join("\n");

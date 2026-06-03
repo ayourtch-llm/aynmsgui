@@ -61,6 +61,12 @@
       </select>
     </label>
     <button type="submit">Preview swap</button>
+    {{#has_suggestion}}
+    <span class="port-group-suggestion">
+      <strong>Import matcher suggests:</strong> <code>{{suggested_service}}</code> —
+      <button type="submit" name="try_service" value="{{suggested_service}}" formaction="/diff/{{name}}/reconcile">Preview suggestion</button>
+    </span>
+    {{/has_suggestion}}
   </form>
   <table class="reconcile-table">
     <thead><tr><th style="width:60%;">Delta line</th><th>Source</th></tr></thead>

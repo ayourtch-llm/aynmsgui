@@ -185,6 +185,14 @@ struct PortGroupCtx {
     /// form pointing at /swap.
     is_previewing: bool,
     previewing_service: String,
+    /// Best-fit service for this port's *current device-side* body, looked
+    /// up via the same matcher that aycfggen's import flow uses
+    /// (match_port_body_to_existing_service). When this is non-empty AND
+    /// differs from `current_service`, the port is mis-assigned: swapping
+    /// to `suggested_service` would zero out the delta for this port
+    /// without any disk writes happening during the lookup.
+    suggested_service: String,
+    has_suggestion: bool,
 }
 
 #[derive(Serialize)]
@@ -676,6 +684,10 @@ pub async fn reconcile_detail(
                             } else {
                                 String::new()
                             },
+                            // Populated after grouping completes (we need
+                            // the parsed current-config bodies for that).
+                            suggested_service: String::new(),
+                            has_suggestion: false,
                         }
                     });
                     group.lines.push(line_ctx);
@@ -701,11 +713,34 @@ pub async fn reconcile_detail(
         other_lines.push(line_ctx);
     }
 
-    // Finalize port groups: compute line_count and sort.
+    // Pre-load every service's port-config.txt once. Used both for the
+    // dropdown options and for the import-style match below.
+    let services_map = load_service_port_configs(&cfggen_base, &available_services);
+
+    // For each port group, parse its body out of the *current* device
+    // config and ask "which existing service does this body match?" — the
+    // same matcher decompose_ports uses during import. If the matched
+    // service differs from what's currently assigned, that's a strong
+    // suggestion for the swap dropdown.
+    let current_port_bodies = parse_interface_bodies(&current_tree);
+
+    // Finalize port groups: compute line_count, run the matcher, sort.
     let mut port_groups: Vec<PortGroupCtx> = port_groups_map
         .into_values()
         .map(|mut g| {
             g.line_count = g.lines.len();
+            let iface_text = format!("interface {}", g.derived_interface);
+            if let Some(body) = current_port_bodies.get(&iface_text) {
+                if let Some(matched) =
+                    aycfggen::port_decomposition::match_port_body_to_existing_service(
+                        body,
+                        &services_map,
+                    )
+                {
+                    g.has_suggestion = matched != g.current_service && !matched.is_empty();
+                    g.suggested_service = matched;
+                }
+            }
             g
         })
         .collect();
@@ -949,6 +984,57 @@ pub async fn absorb_drift(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build the `service_name → port-config.txt content` map the matcher
+/// needs. Reads each service directory once; missing or unreadable
+/// `port-config.txt` files are silently skipped (matching the import
+/// path's tolerance).
+fn load_service_port_configs(
+    cfggen_base: &std::path::Path,
+    service_names: &[String],
+) -> std::collections::HashMap<String, String> {
+    let services_dir = cfggen_base.join("services");
+    let mut out = std::collections::HashMap::new();
+    for name in service_names {
+        let path = services_dir.join(name).join("port-config.txt");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            out.insert(name.clone(), content);
+        }
+    }
+    out
+}
+
+/// Walk a parsed config tree and pull out each `interface X` section's
+/// body lines (excluding the header itself). The keys are the section
+/// headers (e.g. `interface TwoGigabitEthernet1/0/12`) — matches the
+/// `iface_text` we build elsewhere when looking up by port.
+fn parse_interface_bodies(
+    tree: &aycicdiff::model::config_tree::ConfigTree,
+) -> std::collections::HashMap<String, Vec<String>> {
+    use aycicdiff::model::config_tree::ConfigNode;
+    let mut out = std::collections::HashMap::new();
+    for node in &tree.nodes {
+        if let ConfigNode::Section(section) = node {
+            if section.header.starts_with("interface ") {
+                // Render each child as a single body line, preserving the
+                // single-space sub-mode indentation that services use.
+                let mut lines: Vec<String> = Vec::new();
+                for child in &section.children {
+                    match child {
+                        ConfigNode::Leaf(l) => lines.push(format!(" {}", l.text)),
+                        ConfigNode::Section(s) => {
+                            // Rare in interface blocks; flatten the header
+                            // as a line and ignore further nesting.
+                            lines.push(format!(" {}", s.header));
+                        }
+                    }
+                }
+                out.insert(section.header.clone(), lines);
+            }
+        }
+    }
+    out
+}
 
 fn load_available_services(cfggen_base: &std::path::Path) -> Vec<String> {
     let services_dir = cfggen_base.join("services");

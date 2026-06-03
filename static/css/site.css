@@ -308,6 +308,15 @@ details.svi-group > summary {
     font-size: 0.95em;
 }
 .port-group-form select { margin: 0 6px; min-width: 200px; }
+.port-group-suggestion {
+    display: inline-block;
+    margin-left: 12px;
+    padding: 2px 8px;
+    background: #ecf3ff;
+    border: 1px solid #9fb6e0;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
 
 /* /retrieve: rows for devices not seen within the freshness window. The
  * checkbox is `disabled` so they can't be picked; the pale-red tint

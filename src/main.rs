@@ -1,6 +1,7 @@
 mod auth;
 pub mod assignments;
 mod cdp_sweep;
+mod cli;
 mod config;
 mod error;
 pub mod jumphost_connector;
@@ -115,6 +116,20 @@ fn ensure_data_dirs(cfg: &AppConfig) {
 
 #[tokio::main]
 async fn main() {
+    // Allow `aynmsgui cli <subcommand> ...` as an inspection mode that
+    // bypasses the server. Detect by literal argv[1] == "cli" so the
+    // existing AppConfig parse for the server path stays unchanged.
+    let raw_argv: Vec<String> = std::env::args().collect();
+    if raw_argv.get(1).map(|s| s.as_str()) == Some("cli") {
+        // Hand the CLI module argv with "cli" removed so its clap parser
+        // sees the right binary name in position 0.
+        let mut cli_argv: Vec<String> = Vec::with_capacity(raw_argv.len() - 1);
+        cli_argv.push(format!("{} cli", raw_argv[0]));
+        cli_argv.extend(raw_argv.into_iter().skip(2));
+        cli::run(cli_argv);
+        return;
+    }
+
     let cfg = AppConfig::parse();
 
     tracing_subscriber::fmt()

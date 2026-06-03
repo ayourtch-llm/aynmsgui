@@ -2186,7 +2186,21 @@ fn find_duplicate_groups(cfggen_base: &std::path::Path) -> (Vec<DedupGroup>, Vec
     for name in &services {
         let content = services_map.get(name).cloned().unwrap_or_default();
         let strict_key = normalize_service_strict(&content);
+        // Services with no real body (missing / empty / whitespace-only
+        // port-config.txt) are usually placeholders — don't suggest
+        // merging them just because they all normalize to "". Same for
+        // their loose key. If the strict key is empty, skip both.
+        if strict_key.trim().is_empty() {
+            continue;
+        }
         let loose_key = normalize_service_loose(&content);
+        if loose_key.trim().is_empty() {
+            // Service has *only* description lines (no body) — also not a
+            // useful merge candidate. Strict bucket still gets it in case
+            // two such stubs are truly byte-equal, but skip loose.
+            strict_buckets.entry(strict_key).or_default().push(name.clone());
+            continue;
+        }
         strict_buckets.entry(strict_key).or_default().push(name.clone());
         loose_buckets.entry(loose_key).or_default().push(name.clone());
     }

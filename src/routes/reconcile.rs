@@ -710,6 +710,21 @@ pub async fn reconcile_detail(
     let mut drift_lines: Vec<DriftLineCtx> = Vec::new();
     let mut other_lines: Vec<ReconcileLineCtx> = Vec::new();
 
+    // Pre-compute the matcher suggestion per interface so the dropdown
+    // in each port panel can default to it (instead of the currently-
+    // assigned service). One less click for the operator: tick the
+    // multi-preview checkbox and the suggestion is ready to go.
+    let early_services_map = load_service_port_configs(&cfggen_base, &available_services);
+    let early_port_bodies = parse_interface_bodies(&current_tree);
+    let mut port_suggestions: HashMap<String, String> = HashMap::new();
+    for (iface_text, body) in &early_port_bodies {
+        if let Some(matched) =
+            aycfggen::port_decomposition::match_port_body_to_existing_service(body, &early_services_map)
+        {
+            port_suggestions.insert(iface_text.clone(), matched);
+        }
+    }
+
     // Classify every `interface X` line in the target by what kind of
     // source emitted it. The iface_ctx the diff walker hands us is
     // matched against this map to pick a group.
@@ -797,14 +812,21 @@ pub async fn reconcile_detail(
                         // Multi-swap aware: a port group is "previewing"
                         // if any applied swap targets this (module, port);
                         // the preview's selected service comes from that
-                        // swap's `to` value.
+                        // swap's `to` value. When not previewing, default
+                        // to the matcher's suggestion when one exists so
+                        // the dropdown is pre-pointed at the right service.
                         let preview_for_this = applied_swaps
                             .iter()
                             .find(|(m, p, _)| m == module_idx && p == port_name)
                             .map(|(_, _, s)| s.clone());
                         let is_previewing = preview_for_this.is_some();
+                        let suggestion_for_this = port_suggestions
+                            .get(&format!("interface {}", derived_interface))
+                            .cloned()
+                            .filter(|s| !s.is_empty() && s != &current_service);
                         let selected_service = preview_for_this
                             .clone()
+                            .or_else(|| suggestion_for_this.clone())
                             .unwrap_or_else(|| current_service.clone());
                         let service_options: Vec<ServiceOptionCtx> = available_services
                             .iter()
@@ -827,8 +849,8 @@ pub async fn reconcile_detail(
                             template_line: 0,
                             is_previewing,
                             previewing_service: preview_for_this.unwrap_or_default(),
-                            suggested_service: String::new(),
-                            has_suggestion: false,
+                            suggested_service: suggestion_for_this.clone().unwrap_or_default(),
+                            has_suggestion: suggestion_for_this.is_some(),
                             has_prologue,
                             prologue_text,
                         }
@@ -927,8 +949,13 @@ pub async fn reconcile_detail(
                 .find(|(m, p, _)| m == module_idx && p == port_name)
                 .map(|(_, _, s)| s.clone());
             let is_previewing = preview_for_this.is_some();
+            let suggestion_for_this = port_suggestions
+                .get(&format!("interface {}", derived_interface))
+                .cloned()
+                .filter(|s| !s.is_empty() && s != &current_service);
             let selected_service = preview_for_this
                 .clone()
+                .or_else(|| suggestion_for_this.clone())
                 .unwrap_or_else(|| current_service.clone());
             let service_options: Vec<ServiceOptionCtx> = available_services
                 .iter()
@@ -953,8 +980,8 @@ pub async fn reconcile_detail(
                     template_line: 0,
                     is_previewing,
                     previewing_service: preview_for_this.unwrap_or_default(),
-                    suggested_service: String::new(),
-                    has_suggestion: false,
+                    suggested_service: suggestion_for_this.clone().unwrap_or_default(),
+                    has_suggestion: suggestion_for_this.is_some(),
                     has_prologue,
                     prologue_text,
                 },
@@ -962,32 +989,20 @@ pub async fn reconcile_detail(
         }
     }
 
-    // Finalize port groups: compute line_count, run the matcher, sort.
+    // Finalize port groups: compute line_count and sort. Matcher
+    // suggestion is now populated inline at construction time so the
+    // dropdown can default to it; the post-loop backfill is gone.
     let mut port_groups: Vec<PortGroupCtx> = port_groups_map
         .into_values()
         .map(|mut g| {
             g.line_count = g.lines.len();
-            // Import-matcher suggestion only makes sense for JSON-driven
-            // ports — template-baked interfaces don't have a port.service
-            // field to swap.
-            if g.is_json_port {
-                let iface_text = format!("interface {}", g.derived_interface);
-                if let Some(body) = current_port_bodies.get(&iface_text) {
-                    if let Some(matched) =
-                        aycfggen::port_decomposition::match_port_body_to_existing_service(
-                            body,
-                            &services_map,
-                        )
-                    {
-                        g.has_suggestion =
-                            matched != g.current_service && !matched.is_empty();
-                        g.suggested_service = matched;
-                    }
-                }
-            }
             g
         })
         .collect();
+    // Drop the (now-unused) post-loop maps we built only for the
+    // backfill — port_groups already carry the suggestion.
+    let _ = current_port_bodies;
+    let _ = services_map;
     // JSON ports first (within them: module, then port-name natural), then
     // template-baked interfaces (alphabetized by interface name). Keeps
     // the actionable groups near the top.

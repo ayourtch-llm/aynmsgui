@@ -21,19 +21,18 @@
 </div>
 {{/is_preview}}
 
-{{^is_preview}}
 {{#has_port_groups}}
 <div class="reconcile-multi-bar">
   <strong>Multi-swap:</strong>
-  Tick the checkbox in any port panel below, then —
-  <button type="button" id="multi-preview-btn" disabled>Preview 0 selected swap(s)</button>
+  Tick the checkbox in any port panel below — the dropdown's value
+  defaults to the matcher's suggestion when one exists. Then —
+  <button type="button" id="multi-preview-btn"{{#is_preview}} data-preview-mode="1"{{/is_preview}} disabled>{{#is_preview}}Update preview{{/is_preview}}{{^is_preview}}Preview 0 selected swap(s){{/is_preview}}</button>
   <button type="button" id="multi-clear-btn">Clear selection</button>
-  <span style="color:#666; font-size:0.9em; margin-left:8px;">
-    Uses the value picked in each panel's dropdown.
-  </span>
+  {{#is_preview}}
+  <a href="/diff/{{name}}/reconcile" style="margin-left:6px;">Exit preview</a>
+  {{/is_preview}}
 </div>
 {{/has_port_groups}}
-{{/is_preview}}
 
 {{^has_delta}}
 <p style="color:#1b5e20; font-weight:600;">No changes — target and current configs match. Nothing to reconcile.</p>
@@ -85,7 +84,7 @@
     <button type="submit">Preview swap</button>
     &nbsp;·&nbsp;
     <label title="Tick to add this port's swap to a multi-preview batch (uses the dropdown value)">
-      <input type="checkbox" class="port-multi-include"> include in multi-preview
+      <input type="checkbox" class="port-multi-include"{{#is_previewing}} checked{{/is_previewing}}> include in multi-preview
     </label>
   </form>
   {{#has_suggestion}}
@@ -243,10 +242,18 @@
   var clearBtn = document.getElementById("multi-clear-btn");
   if (!btn) return;  // page is in preview mode; the bar isn't rendered
 
+  var inPreview = btn.dataset.previewMode === "1";
   function refresh() {
     var n = document.querySelectorAll(".port-multi-include:checked").length;
-    btn.textContent = "Preview " + n + " selected swap(s)";
-    btn.disabled = n === 0;
+    if (inPreview) {
+      btn.textContent = n === 0
+        ? "Exit preview (no swaps selected)"
+        : "Update preview (" + n + " selected)";
+      btn.disabled = false; // always allow re-submit to reflect current selection
+    } else {
+      btn.textContent = "Preview " + n + " selected swap(s)";
+      btn.disabled = n === 0;
+    }
   }
   document.querySelectorAll(".port-multi-include").forEach(function (cb) {
     cb.addEventListener("change", refresh);

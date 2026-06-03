@@ -181,6 +181,17 @@
       <button type="submit" title="Append this single command to {{current_service}}/port-config.txt — use when only this one line is missing from the assigned service, not when the whole port body suggests a different service.">Absorb into {{current_service}}</button>
     </form>
     {{/has_port}}
+    {{^has_port}}
+    {{#can_splice}}
+    <form method="POST" action="/diff/{{name}}/reconcile/splice-template" style="display:inline;"
+          onsubmit="return confirm('Insert this line into {{splice_template_path}} after line {{splice_after_line}}, then recompile? Local edit only.');">
+      <input type="hidden" name="template_path" value="{{splice_template_path}}">
+      <input type="hidden" name="after_line" value="{{splice_after_line}}">
+      <input type="hidden" name="line" value="{{bare_cmd}}">
+      <button type="submit" title="Insert this command into {{splice_template_path}} {{#splice_anchor}}right after `{{splice_anchor}}` (line {{splice_after_line}}){{/splice_anchor}}{{^splice_anchor}}at the end of file{{/splice_anchor}}">Splice into template</button>
+    </form>
+    {{/can_splice}}
+    {{/has_port}}
   </td>
 </tr>
 {{/drift_lines}}

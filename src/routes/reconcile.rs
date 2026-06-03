@@ -246,6 +246,17 @@ struct DriftLineCtx {
     /// drift into the wrong assigned service would be wrong.
     suggested_service: String,
     has_suggestion: bool,
+    /// For top-level drift (interface_ctx is empty) we can offer to
+    /// splice the line into the device's .conf template at a sensible
+    /// position. These fields drive that UI when populated.
+    can_splice: bool,
+    splice_template_path: String,
+    /// 1-based line number in the template AFTER which we'd insert.
+    /// 0 means "append at end of file".
+    splice_after_line: usize,
+    /// The text of the template line we'd insert after (for the button
+    /// tooltip). Empty when splicing at end of file.
+    splice_anchor: String,
 }
 
 #[derive(Serialize)]
@@ -678,6 +689,10 @@ pub async fn reconcile_detail(
                 // the matcher result first).
                 suggested_service: String::new(),
                 has_suggestion: false,
+                can_splice: false,
+                splice_template_path: String::new(),
+                splice_after_line: 0,
+                splice_anchor: String::new(),
             });
             continue;
         }
@@ -935,6 +950,63 @@ pub async fn reconcile_detail(
             if !svc.is_empty() && svc != &d.current_service {
                 d.suggested_service = svc.clone();
                 d.has_suggestion = true;
+            }
+        }
+    }
+
+    // For top-level drift (lines on the device but not in target,
+    // outside any interface block), offer a "splice into template"
+    // action. The template_path is the .conf this device compiles
+    // through; the insertion position is computed by walking backwards
+    // from the drift line in the device config until we find a line
+    // that also appears in the template — that anchor's template line
+    // is where we'd insert after.
+    let template_path_rel = real_config.config_template.clone();
+    let template_full_path = cfggen_base
+        .join("config-templates")
+        .join(&template_path_rel);
+    let template_text_for_splice = std::fs::read_to_string(&template_full_path).ok();
+    if let Some(template_text) = template_text_for_splice.as_ref() {
+        let device_lines: Vec<&str> = current_text.lines().collect();
+        let template_lines: Vec<&str> = template_text.lines().collect();
+        for d in &mut drift_lines {
+            if !d.interface_ctx.is_empty() {
+                continue; // per-port drift uses the absorb / swap flow instead
+            }
+            let drift_text_trim = d.bare_cmd.trim();
+            if drift_text_trim.is_empty() {
+                continue;
+            }
+            let Some(drift_pos) = device_lines
+                .iter()
+                .position(|l| l.trim() == drift_text_trim)
+            else {
+                continue;
+            };
+            // Walk backwards from drift_pos looking for the first
+            // device line that also appears in the template.
+            let mut anchor_at: Option<(usize, String)> = None;
+            for i in (0..drift_pos).rev() {
+                let cand = device_lines[i].trim();
+                if cand.is_empty() {
+                    continue;
+                }
+                if let Some(tpos) = template_lines.iter().position(|l| l.trim() == cand) {
+                    anchor_at = Some((tpos + 1, cand.to_string())); // 1-based, insert AFTER
+                    break;
+                }
+            }
+            d.can_splice = true;
+            d.splice_template_path = template_path_rel.clone();
+            match anchor_at {
+                Some((line_no, anchor_text)) => {
+                    d.splice_after_line = line_no;
+                    d.splice_anchor = anchor_text;
+                }
+                None => {
+                    d.splice_after_line = 0; // append at EOF
+                    d.splice_anchor = String::new();
+                }
             }
         }
     }
@@ -2957,5 +3029,106 @@ pub fn routes() -> Router<AppState> {
             "/reconcile/dedup/merge",
             get(dedup_merge_preview).post(dedup_merge_execute),
         )
+        .route(
+            "/diff/{name}/reconcile/splice-template",
+            post(splice_template),
+        )
+}
+
+#[derive(Deserialize)]
+pub struct SpliceTemplateForm {
+    /// Filename under `config-templates/` (e.g. "MY-DEVICE.conf").
+    pub template_path: String,
+    /// 1-based line number AFTER which the new line is inserted.
+    /// 0 means "append at end of file".
+    pub after_line: usize,
+    /// The exact text to insert (no leading/trailing whitespace).
+    pub line: String,
+}
+
+pub async fn splice_template(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Form(form): Form<SpliceTemplateForm>,
+) -> Response {
+    let cfggen_base = match &state.config.cfggen_base_dir {
+        Some(p) if p.exists() => p.clone(),
+        _ => return message(&state, "Not configured", "cfggen_base_dir is unset", None),
+    };
+    let device_name = match resolve_to_device_name(&cfggen_base, &name) {
+        Some(n) => n,
+        None => {
+            return message(
+                &state,
+                "Unknown device",
+                &format!("Could not map '{name}' to a logical device"),
+                Some(("/diff", "Back")),
+            )
+        }
+    };
+
+    // Sanity-check the template path: must live under config-templates/
+    // and not escape via "..". Strip any leading slashes just in case.
+    let tpl_name = form
+        .template_path
+        .trim()
+        .trim_start_matches('/')
+        .to_string();
+    if tpl_name.contains("..") || tpl_name.contains('/') {
+        return message(
+            &state,
+            "Invalid template path",
+            "Template path must be a flat .conf filename",
+            Some(("/diff", "Back")),
+        );
+    }
+    let template_path = cfggen_base.join("config-templates").join(&tpl_name);
+    if !template_path.exists() {
+        return message(
+            &state,
+            "Template not found",
+            &format!("No template at {}", template_path.display()),
+            Some(("/diff", "Back")),
+        );
+    }
+
+    let content = match std::fs::read_to_string(&template_path) {
+        Ok(c) => c,
+        Err(e) => return message(&state, "I/O error", &format!("{e}"), None),
+    };
+    let mut lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+    let insert_at = if form.after_line == 0 {
+        lines.len()
+    } else {
+        std::cmp::min(form.after_line, lines.len())
+    };
+    let line_text = form.line.trim_end().to_string();
+    lines.insert(insert_at, line_text.clone());
+
+    let mut new_content = lines.join("\n");
+    if !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    if let Err(e) = std::fs::write(&template_path, new_content) {
+        warn!(path = %template_path.display(), error = %e, "Failed to write template");
+        return message(&state, "Write failed", &format!("{e}"), None);
+    }
+    info!(
+        device = %device_name,
+        template = %tpl_name,
+        after_line = form.after_line,
+        line = %line_text,
+        "Spliced line into template"
+    );
+
+    if let Err(e) = crate::routes::devices::compile_device_config(
+        &device_name,
+        &cfggen_base,
+        &state.config,
+    ) {
+        warn!(error = %e, "Recompile after template splice failed");
+    }
+
+    Redirect::to(&format!("/diff/{}/reconcile", name)).into_response()
 }
 
